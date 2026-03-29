@@ -424,6 +424,14 @@ function originalLangReadable(res) {
 // -----------------------------------------------------------------------------
 
 /**
+ * Whether the last game chat send attempt resulted in an error.
+ * When true, subsequent identical errors are suppressed to avoid spamming
+ * the terminal.  The flag is cleared on the next successful send so that
+ * a fresh warning is shown if the connection drops again after recovering.
+ */
+let gameChatErrorSuppressed = false;
+
+/**
  * sendToGameChat(text)
  * --------------------
  * Sends a `say` command to the CS2 console via the game's built-in netcon
@@ -435,6 +443,10 @@ function originalLangReadable(res) {
  *
  * The netcon port can be changed with --set-netcon-port <port>.
  * The default port is 2121 and must match the value in the CS2 launch option.
+ *
+ * Connection errors (e.g. ECONNREFUSED when CS2 is not running) are only
+ * printed once.  The warning reappears only after a successful send confirms
+ * the connection had recovered and then fails again.
  */
 function sendToGameChat(text) {
   if (!GAME_CHAT_OUTPUT) return;
@@ -443,17 +455,37 @@ function sendToGameChat(text) {
   client.setTimeout(3000);
 
   client.connect(NETCON_PORT, "127.0.0.1", () => {
+    // Successful connection: clear suppression so future errors are reported.
+    gameChatErrorSuppressed = false;
     client.write(`say ${text}\n`);
     client.destroy();
   });
 
   client.on("error", (err) => {
-    console.log(sym.warn, chalk.yellow(`Game chat send failed: ${err.message}`));
+    if (!gameChatErrorSuppressed) {
+      console.log(sym.warn, chalk.yellow(`Game chat send failed: ${err.message}`));
+      console.log(
+        chalk.gray(
+          `  Make sure CS2 is running with -netconport ${NETCON_PORT}. ` +
+          "Further errors will be suppressed until the connection recovers."
+        )
+      );
+      gameChatErrorSuppressed = true;
+    }
     client.destroy();
   });
 
   client.on("timeout", () => {
-    console.log(sym.warn, chalk.yellow("Game chat send timed out."));
+    if (!gameChatErrorSuppressed) {
+      console.log(sym.warn, chalk.yellow("Game chat send timed out."));
+      console.log(
+        chalk.gray(
+          `  Make sure CS2 is running with -netconport ${NETCON_PORT}. ` +
+          "Further errors will be suppressed until the connection recovers."
+        )
+      );
+      gameChatErrorSuppressed = true;
+    }
     client.destroy();
   });
 }
