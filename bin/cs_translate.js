@@ -454,6 +454,10 @@ function sendToGameChat(text) {
   const client = new net.Socket();
   client.setTimeout(3000);
 
+  // Track whether we have already sent the say command.  Hoisted to function
+  // scope so the error handler can inspect it (see ECONNRESET note below).
+  let sent = false;
+
   client.connect(NETCON_PORT, "127.0.0.1", () => {
     // Successful connection: clear suppression so future errors are reported.
     gameChatErrorSuppressed = false;
@@ -463,7 +467,6 @@ function sendToGameChat(text) {
     // the command to be silently dropped.  We therefore wait for the first
     // incoming data (the banner) and only then send the say command.
     // A 500 ms fallback covers the rare case where no banner arrives.
-    let sent = false;
     const sendCmd = () => {
       if (sent || client.destroyed) return;
       sent = true;
@@ -475,6 +478,14 @@ function sendToGameChat(text) {
   });
 
   client.on("error", (err) => {
+    // After we call client.end() with the say command, CS2 processes it and
+    // then closes its side of the connection, which Node surfaces as
+    // ECONNRESET on the still-open read half.  This is normal — the command
+    // was delivered successfully — so we swallow it silently.
+    if (sent && err.code === "ECONNRESET") {
+      client.destroy();
+      return;
+    }
     if (!gameChatErrorSuppressed) {
       console.log(sym.warn, chalk.yellow(`Game chat send failed: ${err.message}`));
       console.log(
