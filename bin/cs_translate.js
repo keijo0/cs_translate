@@ -457,10 +457,21 @@ function sendToGameChat(text) {
   client.connect(NETCON_PORT, "127.0.0.1", () => {
     // Successful connection: clear suppression so future errors are reported.
     gameChatErrorSuppressed = false;
-    // Use end() instead of write() + destroy() so the command is fully
-    // flushed before the connection closes.  destroy() discards buffered
-    // data immediately, which caused the say command to never reach CS2.
-    client.end(`say ${text}\n`);
+
+    // CS2's netcon sends a welcome banner the moment a client connects.
+    // Sending our command before CS2 finishes writing that banner can cause
+    // the command to be silently dropped.  We therefore wait for the first
+    // incoming data (the banner) and only then send the say command.
+    // A 500 ms fallback covers the rare case where no banner arrives.
+    let sent = false;
+    const sendCmd = () => {
+      if (sent || client.destroyed) return;
+      sent = true;
+      client.end(`say ${text}\n`);
+    };
+
+    client.once("data", sendCmd);
+    setTimeout(sendCmd, 500);
   });
 
   client.on("error", (err) => {
