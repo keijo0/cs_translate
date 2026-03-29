@@ -5,13 +5,10 @@
 
 `cs_translate` is a small, cross-platform CLI tool that watches your Counter-Strike 2 `console.log` in real time and automatically translates in-game chat messages to a target language (default: English), printing the results in your terminal.
 
-It is **read-only**:
+By default it is **read-only** — but it also has an **optional game chat output** mode:
 
-- It does **not** send messages back into the game.
-- It does **not** touch your CS2 config files.
-- It simply reads `console.log`, detects chat lines, translates them, and prints them.
-
-This makes it ideal if you just want to understand what people are saying in chat without spamming in-game messages or messing with binds.
+- When disabled (default): it reads `console.log`, detects chat lines, translates them, and prints them to your terminal only.
+- When enabled: it also sends each translation into the CS2 game chat so all players can see it, using CS2's built-in **netcon** TCP interface.
 
 ---
 
@@ -29,6 +26,14 @@ This makes it ideal if you just want to understand what people are saying in cha
     🌍 [T] Player123 (Russian → EN): Hello, how are you?
     ```
 
+- 💬 **Optional CS2 game chat output** *(new!)*
+  - When enabled, each translation is also sent into the CS2 game chat via the game's built-in **netcon** TCP interface.
+  - Game chat output is **disabled by default** — enable it with one command:
+    ```bash
+    cs_translate --enable-game-chat-output
+    ```
+  - Requires CS2 to be launched with `-netconport 2121` (or your chosen port).
+
 - 🌍 **Language detection + Cyrillic heuristic**
   - Uses Google’s language detection via `google-translate-api-x`.
   - If the message contains Cyrillic characters but detection is *not* `ru`, it can optionally retry assuming Russian to improve accuracy.
@@ -38,8 +43,8 @@ This makes it ideal if you just want to understand what people are saying in cha
   - No platform-specific dependencies beyond Node itself.
 
 - ⚙️ **Simple config**
-  - Only one setting: the path to `console.log`.
   - Config stored in a small `config.json` file.
+  - Managed via CLI helpers — no manual editing required.
 
 ---
 
@@ -52,9 +57,8 @@ This makes it ideal if you just want to understand what people are saying in cha
    - It logs the original message to the terminal.
    - It auto-translates the message to the configured target language (default `en`).
    - If the source language is different from the target, it prints the translation.
+   - **If game chat output is enabled**, the translation is also sent into CS2 game chat using `say <[Player - Language] translated text>` via the netcon TCP interface.
 4. Non-chat lines are ignored.
-
-The tool never writes back to CS2 or the file system (beyond its own config file).
 
 ---
 
@@ -141,7 +145,9 @@ You can (and should) override this path in the `cs_translate` config if your set
 
 ```json
 {
-  "logPath": "/full/path/to/your/cs2/console.log"
+  "logPath": "/full/path/to/your/cs2/console.log",
+  "gameChatOutput": false,
+  "netconPort": 2121
 }
 ```
 
@@ -175,6 +181,24 @@ You rarely need to edit `config.json` by hand. The CLI provides helpers:
 
   ```powershell
   cs_translate --set-log-path "C:\full\path\to\console.log"
+  ```
+
+* Enable sending translations into CS2 game chat:
+
+  ```bash
+  cs_translate --enable-game-chat-output
+  ```
+
+* Disable game chat output (default):
+
+  ```bash
+  cs_translate --disable-game-chat-output
+  ```
+
+* Change the netcon port (must match `-netconport` in CS2 launch options):
+
+  ```bash
+  cs_translate --set-netcon-port 2121
   ```
 
 * Show help:
@@ -283,11 +307,14 @@ You should see a banner similar to:
 🚀 CS2 Chat Auto Translator (watching console.log)
 
 Configuration:
-  logPath: /full/path/to/console.log
+  logPath:          /full/path/to/console.log
+  gameChatOutput:   false
+  netconPort:       2121
 
 Behavior:
   • All detected chat messages are translated to 'EN' and printed here.
-  • This tool never sends anything back to the game. It is read-only.
+  • Game chat output is disabled — translations are shown in this terminal only.
+  • To enable in-game chat output run:  cs_translate --enable-game-chat-output
 ```
 
 Leave this terminal open while you play CS2.
@@ -303,6 +330,34 @@ When players chat in game, you’ll see output like:
 ```
 
 If the source language is already English (or your configured target), the tool may skip printing a translation to keep noise low.
+
+### 3. (Optional) Enable game chat output
+
+To have translations automatically appear in the CS2 game chat for all players to see:
+
+1. Add `-netconport 2121` to your CS2 Steam launch options (alongside `-condebug`):
+
+   ```text
+   -condebug -netconport 2121
+   ```
+
+2. Enable game chat output in cs_translate:
+
+   ```bash
+   cs_translate --enable-game-chat-output
+   ```
+
+3. Start cs_translate and CS2. When a foreign-language message is detected and translated, the translation will be sent into game chat as:
+
+   ```
+   [Ivan - Russian] Hello, how are you?
+   ```
+
+To disable game chat output again:
+
+```bash
+cs_translate --disable-game-chat-output
+```
 
 ---
 

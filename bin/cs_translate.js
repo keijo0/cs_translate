@@ -77,6 +77,7 @@
  */
 
 import fs from "fs";
+import net from "net";
 import readline from "readline";
 import path from "path";
 import os from "os";
@@ -174,17 +175,27 @@ const CONFIG_DIR = getDefaultConfigDir();
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 
 /**
- * Default configuration object: only contains logPath.
+ * Default configuration object.
+ *
+ * gameChatOutput: when true, translated messages are also sent into the CS2
+ *   game chat via the game's netcon TCP interface.
+ *   Requires CS2 to be launched with:  -netconport 2121
+ *
+ * netconPort: the port used by CS2's netcon (must match the value in the
+ *   CS2 launch option -netconport).  Default: 2121.
  */
 const defaultConfig = {
-  logPath: getDefaultLogPath()
+  logPath: getDefaultLogPath(),
+  gameChatOutput: false,
+  netconPort: 2121
 };
 
 /**
- * Global config value: path to console.log.
- * It will be populated by setupFromConfig().
+ * Global config values populated by setupFromConfig().
  */
 let LOG_PATH = "";
+let GAME_CHAT_OUTPUT = false;
+let NETCON_PORT = 2121;
 
 /**
  * Load configuration from CONFIG_PATH.
@@ -200,7 +211,9 @@ function loadConfig() {
     if (!txt) return { ...defaultConfig };
     const cfg = JSON.parse(txt);
     return {
-      logPath: cfg.logPath || defaultConfig.logPath
+      logPath: cfg.logPath || defaultConfig.logPath,
+      gameChatOutput: typeof cfg.gameChatOutput === "boolean" ? cfg.gameChatOutput : defaultConfig.gameChatOutput,
+      netconPort: typeof cfg.netconPort === "number" ? cfg.netconPort : defaultConfig.netconPort
     };
   } catch (err) {
     console.error(chalk.red(`Failed to load config: ${err.message}`));
@@ -217,7 +230,9 @@ function saveConfig(cfg) {
   try {
     fs.mkdirSync(CONFIG_DIR, { recursive: true });
     const merged = {
-      logPath: cfg.logPath || defaultConfig.logPath
+      logPath: cfg.logPath || defaultConfig.logPath,
+      gameChatOutput: typeof cfg.gameChatOutput === "boolean" ? cfg.gameChatOutput : defaultConfig.gameChatOutput,
+      netconPort: typeof cfg.netconPort === "number" ? cfg.netconPort : defaultConfig.netconPort
     };
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), "utf8");
     return merged;
@@ -238,7 +253,9 @@ function initConfigCli() {
   console.log(chalk.green("Config initialized/updated:"));
   console.log(`  ${CONFIG_PATH}`);
   console.log("Effective values:");
-  console.log(`  logPath: ${merged.logPath}`);
+  console.log(`  logPath:          ${merged.logPath}`);
+  console.log(`  gameChatOutput:   ${merged.gameChatOutput}`);
+  console.log(`  netconPort:       ${merged.netconPort}`);
 }
 
 /**
@@ -261,6 +278,8 @@ function updateConfigKey(key, value) {
 function setupFromConfig() {
   const cfg = loadConfig();
   LOG_PATH = cfg.logPath;
+  GAME_CHAT_OUTPUT = cfg.gameChatOutput;
+  NETCON_PORT = cfg.netconPort;
 
   if (!LOG_PATH) {
     console.error(chalk.red("No logPath configured."));
@@ -401,7 +420,46 @@ function originalLangReadable(res) {
 }
 
 // -----------------------------------------------------------------------------
-// Auto-translate to console (no in-game output)
+// Game chat output via CS2 netcon (optional)
+// -----------------------------------------------------------------------------
+
+/**
+ * sendToGameChat(text)
+ * --------------------
+ * Sends a `say` command to the CS2 console via the game's built-in netcon
+ * TCP interface, if game chat output is enabled in the config.
+ *
+ * Requirements (user must do this once):
+ *   1. Add  -netconport 2121  to CS2's Steam launch options.
+ *   2. Enable game chat output:  cs_translate --enable-game-chat-output
+ *
+ * The netcon port can be changed with --set-netcon-port <port>.
+ * The default port is 2121 and must match the value in the CS2 launch option.
+ */
+function sendToGameChat(text) {
+  if (!GAME_CHAT_OUTPUT) return;
+
+  const client = new net.Socket();
+  client.setTimeout(3000);
+
+  client.connect(NETCON_PORT, "127.0.0.1", () => {
+    client.write(`say ${text}\n`);
+    client.destroy();
+  });
+
+  client.on("error", (err) => {
+    console.log(sym.warn, chalk.yellow(`Game chat send failed: ${err.message}`));
+    client.destroy();
+  });
+
+  client.on("timeout", () => {
+    console.log(sym.warn, chalk.yellow("Game chat send timed out."));
+    client.destroy();
+  });
+}
+
+// -----------------------------------------------------------------------------
+// Auto-translate to console (and optionally to game chat)
 // -----------------------------------------------------------------------------
 
 /**
@@ -409,6 +467,8 @@ function originalLangReadable(res) {
  * -------------------------------------------------
  * Translate a single chat message and print the translated result to the
  * terminal, if the source language differs from the target.
+ * When gameChatOutput is enabled, also sends the translation into CS2 chat
+ * via the netcon TCP interface.
  */
 async function autoTranslateToConsole({ team, sender, message }) {
   if (!AUTO_TRANSLATE) return;
@@ -429,6 +489,8 @@ async function autoTranslateToConsole({ team, sender, message }) {
       `[${team}] ${sender} (${readableLang} → ${AUTO_TRANSLATE_TARGET.toUpperCase()}): `
     ) + chalk.gray(res.text)
   );
+
+  sendToGameChat(`[${sender} - ${readableLang}] ${res.text}`);
 }
 
 // -----------------------------------------------------------------------------
@@ -482,13 +544,17 @@ function printCliHelp() {
   console.log("CS2 Chat Auto Translator");
   console.log("");
   console.log("Usage:");
-  console.log("  cs2-chat-translator                 # start watching console.log and auto-translating");
-  console.log("  cs2-chat-translator --init-config   # create/refresh config.json with a default logPath guess");
-  console.log("  cs2-chat-translator --set-log-path /path/or/drive/to/console.log");
-  console.log("  cs2-chat-translator --help          # show this help");
+  console.log("  cs_translate                              # start watching console.log and auto-translating");
+  console.log("  cs_translate --init-config               # create/refresh config.json with default values");
+  console.log("  cs_translate --set-log-path <path>       # set the path to CS2's console.log");
+  console.log("  cs_translate --enable-game-chat-output   # send translations into CS2 game chat (via netcon)");
+  console.log("  cs_translate --disable-game-chat-output  # disable in-game chat output (default)");
+  console.log("  cs_translate --set-netcon-port <port>    # set the netcon port (default: 2121)");
+  console.log("  cs_translate --help                      # show this help");
   console.log("");
   console.log("Notes:");
   console.log("  - CS2 must be launched with '-condebug' so console.log is written.");
+  console.log("  - To use game chat output, also add '-netconport 2121' to CS2 launch options.");
   console.log("  - Config file location:");
   console.log(`      ${CONFIG_PATH}`);
   console.log("  - logPath is guessed differently on Linux vs Windows,");
@@ -520,18 +586,41 @@ async function start() {
     chalk.bold("CS2 Chat Auto Translator (watching console.log)\n")
   );
   console.log(chalk.gray("Configuration:"));
-  console.log(chalk.white(`  logPath: ${LOG_PATH}\n`));
+  console.log(chalk.white(`  logPath:          ${LOG_PATH}`));
+  console.log(chalk.white(`  gameChatOutput:   ${GAME_CHAT_OUTPUT}`));
+  if (GAME_CHAT_OUTPUT) {
+    console.log(chalk.white(`  netconPort:       ${NETCON_PORT}`));
+  }
+  console.log("");
   console.log(chalk.gray("Behavior:"));
   console.log(
     chalk.white(
       `  • All detected chat messages are translated to '${AUTO_TRANSLATE_TARGET.toUpperCase()}' and printed here.`
     )
   );
-  console.log(
-    chalk.white(
-      "  • This tool never sends anything back to the game. It is read-only."
-    )
-  );
+  if (GAME_CHAT_OUTPUT) {
+    console.log(
+      chalk.white(
+        `  • Translations are sent into CS2 game chat via netcon (port ${NETCON_PORT}).`
+      )
+    );
+    console.log(
+      chalk.yellow(
+        "  • Ensure CS2 is launched with:  -netconport " + NETCON_PORT
+      )
+    );
+  } else {
+    console.log(
+      chalk.white(
+        "  • This tool never sends anything back to the game. It is read-only."
+      )
+    );
+    console.log(
+      chalk.gray(
+        "  • To enable in-game chat output run:  cs_translate --enable-game-chat-output"
+      )
+    );
+  }
   console.log("");
 
   fs.watchFile(LOG_PATH, { interval: 500 }, (curr, prev) => {
@@ -571,6 +660,27 @@ if (args[0] === "--init-config") {
 
 if (args[0] === "--set-log-path" && args[1]) {
   updateConfigKey("logPath", path.resolve(args[1]));
+  process.exit(0);
+}
+
+if (args[0] === "--enable-game-chat-output") {
+  updateConfigKey("gameChatOutput", true);
+  console.log(chalk.yellow("Remember to add  -netconport 2121  to your CS2 launch options."));
+  process.exit(0);
+}
+
+if (args[0] === "--disable-game-chat-output") {
+  updateConfigKey("gameChatOutput", false);
+  process.exit(0);
+}
+
+if (args[0] === "--set-netcon-port" && args[1]) {
+  const port = parseInt(args[1], 10);
+  if (isNaN(port) || port < 1 || port > 65535) {
+    console.error(chalk.red("Invalid port number. Must be between 1 and 65535."));
+    process.exit(1);
+  }
+  updateConfigKey("netconPort", port);
   process.exit(0);
 }
 
