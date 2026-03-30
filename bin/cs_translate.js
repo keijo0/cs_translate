@@ -441,7 +441,9 @@ async function smartTranslate(text, toLang = "en") {
   try {
     const scriptHint = detectScriptHint(text);
 
-    let res = await translateWithRetry(text, { to: toLang, tld: "com" });
+    const translateOpts = { to: toLang, tld: "com", autoCorrect: true };
+
+    let res = await translateWithRetry(text, translateOpts);
     const guess = (res.from?.language?.iso || "").toLowerCase();
 
     if (scriptHint === "ru") {
@@ -451,7 +453,7 @@ async function smartTranslate(text, toLang = "en") {
       // (e.g. returned "en" or another non-Cyrillic language).
       if (!CYRILLIC_LANGUAGES.has(guess)) {
         try {
-          const forced = await translateWithRetry(text, { from: "ru", to: toLang, tld: "com" });
+          const forced = await translateWithRetry(text, { ...translateOpts, from: "ru" });
           forced.__forcedFrom = "ru";
           res = forced;
         } catch {}
@@ -459,7 +461,7 @@ async function smartTranslate(text, toLang = "en") {
     } else if (scriptHint && guess !== scriptHint) {
       // Non-Cyrillic script: if auto-detect doesn't match the detected script, retry with hint.
       try {
-        const hinted = await translateWithRetry(text, { from: scriptHint, to: toLang, tld: "com" });
+        const hinted = await translateWithRetry(text, { ...translateOpts, from: scriptHint });
         hinted.__forcedFrom = scriptHint;
         res = hinted;
       } catch {}
