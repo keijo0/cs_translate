@@ -258,8 +258,16 @@ const LANG_MAP = {
 
 const AUTO_TRANSLATE = true;
 const AUTO_TRANSLATE_TARGET = "en";
-const PREFER_RU_FOR_CYRILLIC = true;
 const CYRILLIC_REGEX = /[\u0400-\u04FF]/;
+
+// Languages that use the Cyrillic script — auto-detection for these should be trusted.
+const CYRILLIC_LANGUAGES = new Set([
+  "ru", "uk", "bg", "sr", "be", "mk", "kk", "mn", "bs", "ce", "os",
+]);
+
+// Minimum character length a message must have to attempt translation.
+// Very short messages (1–2 chars) cannot be reliably detected or translated.
+const MIN_TRANSLATE_LENGTH = 3;
 
 // ---------------------------------------------------------------------------
 // Script detection regexes (used to hint at source language)
@@ -290,10 +298,21 @@ function detectScriptHint(text) {
 // ---------------------------------------------------------------------------
 
 const BUILTIN_EXCLUSIONS = [
-  "gg", "ez", "gl", "hf", "gl hf", "gg ez", "nt", "ns", "wp",
-  "rush b", "eco", "force", "save", "awp", "ak", "m4", "ct", "t",
-  "ff", "bg", "lul", "kek", "xd", "oof", "pog", "poggers",
-  "rip", "gg wp", "glhf", "ggwp",
+  // Match outcomes / general reactions
+  "gg", "ez", "gg ez", "gg wp", "ggwp", "nt", "ns", "wp", "bg",
+  // Pre-game
+  "gl", "hf", "gl hf", "glhf",
+  // In-game callouts / strategy
+  "rush b", "eco", "force", "save", "ct", "t", "ff",
+  // Weapons
+  "awp", "ak", "m4",
+  // Emotes / reactions
+  "lol", "lmao", "lmfao", "omg", "wtf", "rip", "oof",
+  "lul", "kek", "xd", "pog", "poggers", "ff",
+  // Acknowledgements
+  "ok", "ok.", "k", "y", "n", "no", "yes", "np", "ty", "thx", "pls", "plz",
+  // Common non-translatable short terms
+  "gg", "go", "go go",
 ];
 
 // ---------------------------------------------------------------------------
@@ -377,6 +396,10 @@ function langName(iso) {
 }
 
 async function smartTranslate(text, toLang = "en") {
+  if (text.trim().length < MIN_TRANSLATE_LENGTH) {
+    return { text, from: { language: { iso: toLang } }, __excluded: true, __confidence: 1 };
+  }
+
   if (isExcluded(text)) {
     return { text, from: { language: { iso: toLang } }, __excluded: true, __confidence: 1 };
   }
@@ -389,18 +412,25 @@ async function smartTranslate(text, toLang = "en") {
   try {
     const scriptHint = detectScriptHint(text);
 
-    let res = await translateWithRetry(text, { to: toLang });
+    let res = await translateWithRetry(text, { to: toLang, tld: "com" });
     const guess = (res.from?.language?.iso || "").toLowerCase();
 
-    if (PREFER_RU_FOR_CYRILLIC && scriptHint === "ru" && guess !== "ru") {
+    if (scriptHint === "ru") {
+      // Cyrillic text: trust auto-detect when it returns any known Cyrillic language
+      // (Russian, Ukrainian, Bulgarian, Serbian, Belarusian, etc.).
+      // Only retry with Russian if auto-detect completely missed the Cyrillic script
+      // (e.g. returned "en" or another non-Cyrillic language).
+      if (!CYRILLIC_LANGUAGES.has(guess)) {
+        try {
+          const forced = await translateWithRetry(text, { from: "ru", to: toLang, tld: "com" });
+          forced.__forcedFrom = "ru";
+          res = forced;
+        } catch {}
+      }
+    } else if (scriptHint && guess !== scriptHint) {
+      // Non-Cyrillic script: if auto-detect doesn't match the detected script, retry with hint.
       try {
-        const forced = await translateWithRetry(text, { from: "ru", to: toLang });
-        forced.__forcedFrom = "ru";
-        res = forced;
-      } catch {}
-    } else if (scriptHint && scriptHint !== "ru" && guess !== scriptHint) {
-      try {
-        const hinted = await translateWithRetry(text, { from: scriptHint, to: toLang });
+        const hinted = await translateWithRetry(text, { from: scriptHint, to: toLang, tld: "com" });
         hinted.__forcedFrom = scriptHint;
         res = hinted;
       } catch {}
