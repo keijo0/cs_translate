@@ -38,6 +38,9 @@
  *   cs_translate --set-cfg-path <path>     # set translated.cfg path
  *   cs_translate --enable-game-chat-output
  *   cs_translate --disable-game-chat-output
+ *   cs_translate --add-exclusion <term>    # add term to exclusion list
+ *   cs_translate --remove-exclusion <term> # remove term from exclusion list
+ *   cs_translate --list-exclusions         # show current exclusion list
  *   cs_translate --help
  */
 
@@ -92,11 +95,13 @@ const defaultConfig = {
   logPath: getDefaultLogPath(),
   cfgPath: getDefaultCfgPath(),
   gameChatOutput: false,
+  excludedTerms: [],
 };
 
 let LOG_PATH = "";
 let CFG_PATH = "";
 let GAME_CHAT_OUTPUT = false;
+let EXCLUDED_TERMS = [];
 
 // ---------------------------------------------------------------------------
 // Config load/save
@@ -112,6 +117,7 @@ function loadConfig() {
       logPath: cfg.logPath || defaultConfig.logPath,
       cfgPath: cfg.cfgPath || defaultConfig.cfgPath,
       gameChatOutput: typeof cfg.gameChatOutput === "boolean" ? cfg.gameChatOutput : defaultConfig.gameChatOutput,
+      excludedTerms: Array.isArray(cfg.excludedTerms) ? cfg.excludedTerms : [],
     };
   } catch (err) {
     console.error(chalk.red(`Failed to load config: ${err.message}`));
@@ -126,6 +132,7 @@ function saveConfig(cfg) {
       logPath: cfg.logPath || defaultConfig.logPath,
       cfgPath: cfg.cfgPath || defaultConfig.cfgPath,
       gameChatOutput: typeof cfg.gameChatOutput === "boolean" ? cfg.gameChatOutput : defaultConfig.gameChatOutput,
+      excludedTerms: Array.isArray(cfg.excludedTerms) ? cfg.excludedTerms : [],
     };
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), "utf8");
     return merged;
@@ -151,6 +158,7 @@ function initConfigCli() {
   console.log(`  logPath:          ${merged.logPath}`);
   console.log(`  cfgPath:          ${merged.cfgPath}`);
   console.log(`  gameChatOutput:   ${merged.gameChatOutput}`);
+  console.log(`  excludedTerms:    ${merged.excludedTerms.length ? merged.excludedTerms.join(", ") : "(none)"}`);
 }
 
 function setupFromConfig() {
@@ -158,10 +166,51 @@ function setupFromConfig() {
   LOG_PATH = cfg.logPath;
   CFG_PATH = cfg.cfgPath;
   GAME_CHAT_OUTPUT = cfg.gameChatOutput;
+  EXCLUDED_TERMS = cfg.excludedTerms || [];
   if (!LOG_PATH) {
     console.error(chalk.red("No logPath configured. Use --set-log-path."));
     process.exit(1);
   }
+}
+
+function addExclusionCli(term) {
+  const cfg = loadConfig();
+  const lower = term.toLowerCase();
+  if (cfg.excludedTerms.map((t) => t.toLowerCase()).includes(lower)) {
+    console.log(chalk.yellow(`Term already in exclusion list: ${term}`));
+    return;
+  }
+  cfg.excludedTerms.push(term);
+  saveConfig(cfg);
+  console.log(chalk.green(`Added exclusion: ${term}`));
+}
+
+function removeExclusionCli(term) {
+  const cfg = loadConfig();
+  const lower = term.toLowerCase();
+  const before = cfg.excludedTerms.length;
+  cfg.excludedTerms = cfg.excludedTerms.filter((t) => t.toLowerCase() !== lower);
+  if (cfg.excludedTerms.length === before) {
+    console.log(chalk.yellow(`Term not found in exclusion list: ${term}`));
+    return;
+  }
+  saveConfig(cfg);
+  console.log(chalk.green(`Removed exclusion: ${term}`));
+}
+
+function listExclusionsCli() {
+  const cfg = loadConfig();
+  const all = [...BUILTIN_EXCLUSIONS, ...cfg.excludedTerms];
+  console.log(chalk.bold("Translation exclusions:"));
+  console.log(chalk.gray("  Built-in (CS2 gaming terms):"));
+  for (const t of BUILTIN_EXCLUSIONS) console.log(`    ${t}`);
+  console.log(chalk.gray("  User-defined:"));
+  if (cfg.excludedTerms.length === 0) {
+    console.log(chalk.gray("    (none)"));
+  } else {
+    for (const t of cfg.excludedTerms) console.log(`    ${t}`);
+  }
+  console.log(`\n  Config: ${CONFIG_PATH}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -212,30 +261,159 @@ const AUTO_TRANSLATE_TARGET = "en";
 const PREFER_RU_FOR_CYRILLIC = true;
 const CYRILLIC_REGEX = /[\u0400-\u04FF]/;
 
-function langName(iso) {
-  const key = (iso || "").toLowerCase();
-  return LANG_MAP[key] || key.toUpperCase() || "UNKNOWN";
+// ---------------------------------------------------------------------------
+// Script detection regexes (used to hint at source language)
+// ---------------------------------------------------------------------------
+
+const ARABIC_REGEX    = /[\u0600-\u06FF\u0750-\u077F]/;
+const CJK_REGEX       = /[\u4E00-\u9FFF\u3400-\u4DBF\u3000-\u303F\u30A0-\u30FF\u3040-\u309F]/;
+const THAI_REGEX      = /[\u0E00-\u0E7F]/;
+const DEVANAGARI_REGEX = /[\u0900-\u097F]/;
+const HEBREW_REGEX    = /[\u0590-\u05FF]/;
+const GREEK_REGEX     = /[\u0370-\u03FF]/;
+const GEORGIAN_REGEX  = /[\u10A0-\u10FF]/;
+
+function detectScriptHint(text) {
+  if (CYRILLIC_REGEX.test(text)) return "ru";
+  if (ARABIC_REGEX.test(text))   return "ar";
+  if (HEBREW_REGEX.test(text))   return "he";
+  if (THAI_REGEX.test(text))     return "th";
+  if (DEVANAGARI_REGEX.test(text)) return "hi";
+  if (GREEK_REGEX.test(text))    return "el";
+  if (GEORGIAN_REGEX.test(text)) return "ka";
+  if (CJK_REGEX.test(text))      return "zh";
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Built-in CS2 gaming terminology exclusions
+// ---------------------------------------------------------------------------
+
+const BUILTIN_EXCLUSIONS = [
+  "gg", "ez", "gl", "hf", "gl hf", "gg ez", "nt", "ns", "wp",
+  "rush b", "eco", "force", "save", "awp", "ak", "m4", "ct", "t",
+  "ff", "bg", "lul", "kek", "xd", "oof", "pog", "poggers",
+  "rip", "gg wp", "glhf", "ggwp",
+];
+
+// ---------------------------------------------------------------------------
+// Translation cache
+// ---------------------------------------------------------------------------
+
+const CACHE_MAX_SIZE = 500;
+const translationCache = new Map();
+
+function getCacheKey(text, toLang) {
+  return `${toLang}:${text}`;
+}
+
+function cacheGet(text, toLang) {
+  return translationCache.get(getCacheKey(text, toLang));
+}
+
+function cacheSet(text, toLang, result) {
+  if (translationCache.size >= CACHE_MAX_SIZE) {
+    const firstKey = translationCache.keys().next().value;
+    translationCache.delete(firstKey);
+  }
+  translationCache.set(getCacheKey(text, toLang), result);
+}
+
+// ---------------------------------------------------------------------------
+// Translation exclusion check
+// ---------------------------------------------------------------------------
+
+function isExcluded(text) {
+  const lower = text.toLowerCase().trim();
+  const allExclusions = [...BUILTIN_EXCLUSIONS, ...EXCLUDED_TERMS.map((t) => t.toLowerCase())];
+  return allExclusions.includes(lower);
+}
+
+// ---------------------------------------------------------------------------
+// Confidence scoring
+// ---------------------------------------------------------------------------
+
+function computeConfidence(text, detectedLang, targetLang) {
+  if (!detectedLang || detectedLang === "unknown") return 0;
+  if (detectedLang === targetLang) return 1;
+  let score = 0.5;
+  if (text.length >= 20) score += 0.2;
+  if (text.length >= 50) score += 0.15;
+  const scriptHint = detectScriptHint(text);
+  if (scriptHint && scriptHint === detectedLang) score += 0.15;
+  return Math.min(score, 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// Translation with retry + exponential backoff
+// ---------------------------------------------------------------------------
+
+const TRANSLATE_MAX_RETRIES = 3;
+const TRANSLATE_RETRY_BASE_MS = 500;
+
+async function translateWithRetry(text, opts) {
+  let lastErr;
+  for (let attempt = 0; attempt < TRANSLATE_MAX_RETRIES; attempt++) {
+    try {
+      return await translate(text, opts);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < TRANSLATE_MAX_RETRIES - 1) {
+        const delay = TRANSLATE_RETRY_BASE_MS * Math.pow(2, attempt);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+  throw lastErr;
 }
 
 // ---------------------------------------------------------------------------
 // Translation
 // ---------------------------------------------------------------------------
 
+function langName(iso) {
+  const key = (iso || "").toLowerCase();
+  return LANG_MAP[key] || key.toUpperCase() || "UNKNOWN";
+}
+
 async function smartTranslate(text, toLang = "en") {
+  if (isExcluded(text)) {
+    return { text, from: { language: { iso: toLang } }, __excluded: true, __confidence: 1 };
+  }
+
+  const cached = cacheGet(text, toLang);
+  if (cached) {
+    return { ...cached, __fromCache: true };
+  }
+
   try {
-    let res = await translate(text, { to: toLang });
+    const scriptHint = detectScriptHint(text);
+
+    let res = await translateWithRetry(text, { to: toLang });
     const guess = (res.from?.language?.iso || "").toLowerCase();
-    if (PREFER_RU_FOR_CYRILLIC && CYRILLIC_REGEX.test(text) && guess !== "ru") {
+
+    if (PREFER_RU_FOR_CYRILLIC && scriptHint === "ru" && guess !== "ru") {
       try {
-        const forced = await translate(text, { from: "ru", to: toLang });
+        const forced = await translateWithRetry(text, { from: "ru", to: toLang });
         forced.__forcedFrom = "ru";
-        return forced;
+        res = forced;
+      } catch {}
+    } else if (scriptHint && scriptHint !== "ru" && guess !== scriptHint) {
+      try {
+        const hinted = await translateWithRetry(text, { from: scriptHint, to: toLang });
+        hinted.__forcedFrom = scriptHint;
+        res = hinted;
       } catch {}
     }
+
+    const detectedIso = (res.__forcedFrom || res.from?.language?.iso || "unknown").toLowerCase();
+    res.__confidence = computeConfidence(text, detectedIso, toLang);
+
+    cacheSet(text, toLang, res);
     return res;
   } catch (err) {
     console.log(sym.warn, chalk.yellow(`Translation failed: ${err.message}`));
-    return { text, from: { language: { iso: "unknown" } } };
+    return { text, from: { language: { iso: "unknown" } }, __failed: true, __confidence: 0 };
   }
 }
 
@@ -268,15 +446,25 @@ async function autoTranslateToConsole({ team, sender, message }) {
   if (!AUTO_TRANSLATE || !message) return;
 
   const res = await smartTranslate(message, AUTO_TRANSLATE_TARGET);
+
+  if (res.__excluded) return;
+  if (res.__failed) return;
+
   const fromIso = (res.__forcedFrom || res.from?.language?.iso || "unknown").toLowerCase();
 
   if (fromIso === AUTO_TRANSLATE_TARGET.toLowerCase()) return;
 
   const readableLang = originalLangReadable(res);
+  const cacheTag = res.__fromCache ? chalk.gray(" [cached]") : "";
+  const confidence = res.__confidence ?? 0;
+  const confTag = confidence < 0.5 ? chalk.yellow(` [low confidence: ${Math.round(confidence * 100)}%]`) : "";
+
   console.log(
     sym.trans,
     chalk.blueBright(`[${team}] ${sender} (${readableLang} → ${AUTO_TRANSLATE_TARGET.toUpperCase()}): `) +
-    chalk.gray(res.text)
+    chalk.gray(res.text) +
+    cacheTag +
+    confTag
   );
 
   sendToGameChat(`[${sender} - ${readableLang}] ${res.text}`);
@@ -316,7 +504,17 @@ function printCliHelp() {
   console.log("  cs_translate --set-cfg-path <path>       # set translated.cfg output path");
   console.log("  cs_translate --enable-game-chat-output   # write translations to cfg file");
   console.log("  cs_translate --disable-game-chat-output  # disable cfg output (default)");
+  console.log("  cs_translate --add-exclusion <term>      # add term to translation exclusion list");
+  console.log("  cs_translate --remove-exclusion <term>   # remove term from exclusion list");
+  console.log("  cs_translate --list-exclusions           # show all excluded terms");
   console.log("  cs_translate --help                      # show this help");
+  console.log("");
+  console.log("Features:");
+  console.log("  - Translation caching: identical messages are not re-translated");
+  console.log("  - Retry with backoff: up to 3 attempts on API failure");
+  console.log("  - Confidence scoring: [low confidence] tag shown for uncertain translations");
+  console.log("  - Script detection: Arabic, CJK, Cyrillic, Devanagari, Georgian, Greek, Hebrew, Thai");
+  console.log("  - Exclusion list: common CS2 terms (gg, ez, gl hf …) are never translated");
   console.log("");
   console.log("To send translations into game chat:");
   console.log("  1. Run:  cs_translate --enable-game-chat-output");
@@ -393,6 +591,9 @@ if (args[0] === "--enable-game-chat-output") {
   process.exit(0);
 }
 if (args[0] === "--disable-game-chat-output") { updateConfigKey("gameChatOutput", false); process.exit(0); }
+if (args[0] === "--add-exclusion" && args[1]) { addExclusionCli(args[1]); process.exit(0); }
+if (args[0] === "--remove-exclusion" && args[1]) { removeExclusionCli(args[1]); process.exit(0); }
+if (args[0] === "--list-exclusions") { listExclusionsCli(); process.exit(0); }
 
 start().catch((err) => {
   console.error(chalk.red("Fatal error:"), err);

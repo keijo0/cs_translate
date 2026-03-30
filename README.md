@@ -26,7 +26,7 @@ By default it is **read-only** — but it also has an **optional game chat outpu
     🌍 [T] Player123 (Russian → EN): Hello, how are you?
     ```
 
-- 💬 **Optional CS2 game chat output** *(new!)*
+- 💬 **Optional CS2 game chat output**
   - When enabled, each translation is also sent into the CS2 game chat via the game's built-in **netcon** TCP interface.
   - Game chat output is **disabled by default** — enable it with one command:
     ```bash
@@ -34,9 +34,32 @@ By default it is **read-only** — but it also has an **optional game chat outpu
     ```
   - Requires CS2 to be launched with `-netconport 2121` (or your chosen port).
 
-- 🌍 **Language detection + Cyrillic heuristic**
-  - Uses Google’s language detection via `google-translate-api-x`.
-  - If the message contains Cyrillic characters but detection is *not* `ru`, it can optionally retry assuming Russian to improve accuracy.
+- 🌍 **Improved language detection**
+  - Uses Google's language detection via `google-translate-api-x`.
+  - Script-based detection hints for 8 writing systems: **Arabic, CJK (Chinese/Japanese/Korean), Cyrillic, Devanagari, Georgian, Greek, Hebrew, Thai**.
+  - When detected language doesn't match the script, the tool retries with the correct source language for better accuracy.
+
+- ⚡ **Translation caching**
+  - Identical messages are cached in memory (up to 500 entries) and never re-translated.
+  - Cached results are shown with a `[cached]` tag in the terminal.
+  - Reduces redundant API calls and prevents rate limiting.
+
+- 🔁 **Retry with exponential backoff**
+  - Transient API failures are automatically retried up to 3 times with exponential backoff (500 ms → 1 s → 2 s).
+  - Only reports failure after all retries are exhausted.
+
+- 📊 **Confidence scoring**
+  - Each translation is scored for reliability based on text length and script-detection agreement.
+  - Translations with less than 50% confidence are tagged `[low confidence: X%]` in the terminal.
+
+- 🎮 **CS2 gaming terminology exclusion list**
+  - Common CS2 abbreviations (`gg`, `ez`, `gl hf`, `rush b`, `eco`, `awp`, …) are never sent to the translation API.
+  - Users can add their own exclusions (player names, clan tags, custom slang):
+    ```bash
+    cs_translate --add-exclusion "yourterm"
+    cs_translate --list-exclusions
+    cs_translate --remove-exclusion "yourterm"
+    ```
 
 - 📦 **Cross-platform**
   - Works on **Linux** and **Windows** (Node.js-based).
@@ -199,6 +222,14 @@ You rarely need to edit `config.json` by hand. The CLI provides helpers:
 
   ```bash
   cs_translate --set-netcon-port 2121
+  ```
+
+* Manage translation exclusions (custom terms that should never be translated):
+
+  ```bash
+  cs_translate --add-exclusion "yourterm"
+  cs_translate --remove-exclusion "yourterm"
+  cs_translate --list-exclusions
   ```
 
 * Show help:
