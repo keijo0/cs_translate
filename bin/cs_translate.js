@@ -337,8 +337,28 @@ const CYRILLIC_LANGUAGES = new Set([
 // Very short messages (1–2 chars) cannot be reliably detected or translated.
 const MIN_TRANSLATE_LENGTH = 3;
 
-// Translations scored below this threshold are tagged [low confidence] in the terminal.
+// Translations scored below this threshold are tagged [low confidence] in the terminal
+// and are NOT written to the cfg files to avoid sending wrong text to game chat.
 const CONFIDENCE_THRESHOLD = 0.5;
+
+// Languages that are essentially never spoken in CS2 game chat.
+// When Google Translate returns one of these for plain Latin-script text (i.e. no
+// script hint corroborates the detection), the result is almost certainly a false
+// positive (e.g. "eze mapa" being mis-detected as Hawaiian).
+const IMPROBABLE_CS2_LANGS = new Set([
+  "haw",  // Hawaiian
+  "cy",   // Welsh
+  "eo",   // Esperanto
+  "la",   // Latin
+  "mi",   // Maori
+  "hmn",  // Hmong
+  "ny",   // Chichewa
+  "sm",   // Samoan
+  "gd",   // Scots Gaelic
+  "ga",   // Irish
+  "co",   // Corsican
+  "fy",   // Frisian
+]);
 
 // Regex that matches CS2 chat lines: "[CT|T|ALL] Player: message"
 const CHAT_LINE_REGEX = /\[(CT|T|ALL)\]\s+([^:]+):\s(.+)/;
@@ -459,6 +479,11 @@ function computeConfidence(text, detectedLang, targetLang) {
   if (text.length >= 50) score += 0.15;
   const scriptHint = detectScriptHint(text);
   if (scriptHint && scriptHint === detectedLang) score += 0.15;
+  // If the detected language is one that essentially never appears in CS2 and
+  // there is no script evidence to back it up, this is almost certainly a
+  // Google Translate false positive (e.g. "eze mapa" → Hawaiian).
+  // Cap confidence low so the result is flagged and not sent to game chat.
+  if (IMPROBABLE_CS2_LANGS.has(detectedLang) && !scriptHint) score = Math.min(score, 0.2);
   return Math.min(score, 1.0);
 }
 
@@ -666,7 +691,7 @@ async function autoTranslateToConsole({ team, sender, message }) {
       const resRu = await smartTranslate(message, "ru");
       if (!resRu.__excluded && !resRu.__failed) {
         const fromIsoRu = (resRu.__forcedFrom || resRu.from?.language?.iso || "unknown").toLowerCase();
-        if (fromIsoRu !== "ru") {
+        if (fromIsoRu !== "ru" && (resRu.__confidence ?? 0) >= CONFIDENCE_THRESHOLD) {
           sendToGameChatRu(`[${sender} - ${originalLangReadable(resRu)}] ${resRu.text}`);
         }
       }
@@ -689,12 +714,16 @@ async function autoTranslateToConsole({ team, sender, message }) {
     confTag
   );
 
-  sendToGameChat(`[${sender} - ${readableLang}] ${res.text}`);
+  // Only write to cfg when confidence is high enough — low-confidence results
+  // (e.g. misdetected language) are shown in the terminal but not sent to game chat.
+  if (confidence >= CONFIDENCE_THRESHOLD) {
+    sendToGameChat(`[${sender} - ${readableLang}] ${res.text}`);
+  }
 
   // Also translate to Russian if enabled, unless the source is already Russian
   if (GAME_RU_CHAT_OUTPUT && fromIso !== "ru") {
     const resRu = await smartTranslate(message, "ru");
-    if (!resRu.__excluded && !resRu.__failed) {
+    if (!resRu.__excluded && !resRu.__failed && (resRu.__confidence ?? 0) >= CONFIDENCE_THRESHOLD) {
       sendToGameChatRu(`[${sender} - ${readableLang}] ${resRu.text}`);
     }
   }
