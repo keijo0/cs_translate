@@ -788,8 +788,8 @@ async function autoTranslateToConsole({ team, sender, message }) {
   const isEnglish = fromIso === AUTO_TRANSLATE_TARGET.toLowerCase();
 
   if (isEnglish) {
-    // English input: write as-is to translated.cfg, then translate to Russian for translated_ru.cfg.
-    sendToGameChat(`[${sender} - English] ${message}`);
+    // English input: already in the target language — skip translated.cfg (no translation needed).
+    // Only translate to Russian for translated_ru.cfg.
     if (GAME_RU_CHAT_OUTPUT) {
       const resRu = await smartTranslate(message, "ru");
       if (!resRu.__excluded && !resRu.__failed) {
