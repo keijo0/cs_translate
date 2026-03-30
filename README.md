@@ -14,6 +14,27 @@ By default it is **read-only** — but it also has an **optional game chat outpu
 
 ## Features
 
+- 🤖 **AI-powered translation (OpenAI GPT)**
+  - When an OpenAI API key is configured, all translations are handled by **GPT** instead of Google Translate.
+  - Uses a CS2-aware system prompt that instructs the model to:
+    - Preserve gaming terms exactly (`bhop`, `wh`, `awp`, `rush`, `smoke`, `clutch`, `gg`, …)
+    - Return only the translated text — no explanations or commentary
+  - AI translations are tagged **`[AI]`** in the terminal output.
+  - If the AI call fails for any reason, the tool **automatically falls back to Google Translate** — zero downtime.
+  - Enable with one command:
+    ```bash
+    cs_translate --set-openai-key sk-...your-key...
+    ```
+  - You can also set the key via the `OPENAI_API_KEY` environment variable.
+  - Change the model (default: `gpt-4o-mini`):
+    ```bash
+    cs_translate --set-openai-model gpt-4o
+    ```
+  - Remove the key to revert to Google Translate:
+    ```bash
+    cs_translate --clear-openai-key
+    ```
+
 - 🧠 **Automatic chat translation**
   - Watches `console.log` for chat lines like:
     - `[CT] PlayerName: message`

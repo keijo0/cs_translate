@@ -61,6 +61,7 @@ import os from "os";
 import { fileURLToPath } from "url";
 import chalk from "chalk";
 import translate from "google-translate-api-x";
+import OpenAI from "openai";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -115,6 +116,8 @@ const defaultConfig = {
   gameChatOutput: false,
   gameRuChatOutput: false,
   excludedTerms: [],
+  openaiApiKey: "",
+  openaiModel: "gpt-4o-mini",
 };
 
 let LOG_PATH = "";
@@ -123,6 +126,8 @@ let CFG_RU_PATH = "";
 let GAME_CHAT_OUTPUT = false;
 let GAME_RU_CHAT_OUTPUT = false;
 let EXCLUDED_TERMS = [];
+let OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+let OPENAI_MODEL = "gpt-4o-mini";
 
 // ---------------------------------------------------------------------------
 // Config load/save
@@ -141,6 +146,8 @@ function loadConfig() {
       gameChatOutput: typeof cfg.gameChatOutput === "boolean" ? cfg.gameChatOutput : defaultConfig.gameChatOutput,
       gameRuChatOutput: typeof cfg.gameRuChatOutput === "boolean" ? cfg.gameRuChatOutput : defaultConfig.gameRuChatOutput,
       excludedTerms: Array.isArray(cfg.excludedTerms) ? cfg.excludedTerms : [],
+      openaiApiKey: typeof cfg.openaiApiKey === "string" ? cfg.openaiApiKey : "",
+      openaiModel: typeof cfg.openaiModel === "string" && cfg.openaiModel ? cfg.openaiModel : defaultConfig.openaiModel,
     };
   } catch (err) {
     console.error(chalk.red(`Failed to load config: ${err.message}`));
@@ -158,6 +165,8 @@ function saveConfig(cfg) {
       gameChatOutput: typeof cfg.gameChatOutput === "boolean" ? cfg.gameChatOutput : defaultConfig.gameChatOutput,
       gameRuChatOutput: typeof cfg.gameRuChatOutput === "boolean" ? cfg.gameRuChatOutput : defaultConfig.gameRuChatOutput,
       excludedTerms: Array.isArray(cfg.excludedTerms) ? cfg.excludedTerms : [],
+      openaiApiKey: typeof cfg.openaiApiKey === "string" ? cfg.openaiApiKey : "",
+      openaiModel: typeof cfg.openaiModel === "string" && cfg.openaiModel ? cfg.openaiModel : defaultConfig.openaiModel,
     };
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), "utf8");
     return merged;
@@ -186,6 +195,8 @@ function initConfigCli() {
   console.log(`  gameChatOutput:      ${merged.gameChatOutput}`);
   console.log(`  gameRuChatOutput:    ${merged.gameRuChatOutput}`);
   console.log(`  excludedTerms:       ${merged.excludedTerms.length ? merged.excludedTerms.join(", ") : "(none)"}`);
+  console.log(`  openaiApiKey:        ${merged.openaiApiKey ? "***" + merged.openaiApiKey.slice(-4) : "(not set — using Google Translate)"}`);
+  console.log(`  openaiModel:         ${merged.openaiModel}`);
 }
 
 function setupFromConfig() {
@@ -196,6 +207,9 @@ function setupFromConfig() {
   GAME_CHAT_OUTPUT = cfg.gameChatOutput;
   GAME_RU_CHAT_OUTPUT = cfg.gameRuChatOutput;
   EXCLUDED_TERMS = cfg.excludedTerms || [];
+  // Config key takes precedence; environment variable is a secondary fallback
+  if (cfg.openaiApiKey) OPENAI_API_KEY = cfg.openaiApiKey;
+  if (cfg.openaiModel) OPENAI_MODEL = cfg.openaiModel;
   if (!LOG_PATH) {
     console.error(chalk.red("No logPath configured. Use --set-log-path."));
     process.exit(1);
@@ -229,7 +243,6 @@ function removeExclusionCli(term) {
 
 function listExclusionsCli() {
   const cfg = loadConfig();
-  const all = [...BUILTIN_EXCLUSIONS, ...cfg.excludedTerms];
   console.log(chalk.bold("Translation exclusions:"));
   console.log(chalk.gray("  Built-in (CS2 gaming terms):"));
   for (const t of BUILTIN_EXCLUSIONS) console.log(`    ${t}`);
@@ -240,6 +253,28 @@ function listExclusionsCli() {
     for (const t of cfg.excludedTerms) console.log(`    ${t}`);
   }
   console.log(`\n  Config: ${CONFIG_PATH}`);
+}
+
+function setOpenAIKeyCli(key) {
+  const cfg = loadConfig();
+  cfg.openaiApiKey = key.trim();
+  saveConfig(cfg);
+  console.log(chalk.green("OpenAI API key saved."));
+  console.log(chalk.gray("  Translation will now use OpenAI GPT with Google Translate as fallback."));
+}
+
+function clearOpenAIKeyCli() {
+  const cfg = loadConfig();
+  cfg.openaiApiKey = "";
+  saveConfig(cfg);
+  console.log(chalk.green("OpenAI API key cleared. Translation will use Google Translate."));
+}
+
+function setOpenAIModelCli(model) {
+  const cfg = loadConfig();
+  cfg.openaiModel = model.trim();
+  saveConfig(cfg);
+  console.log(chalk.green(`OpenAI model set to: ${model.trim()}`));
 }
 
 // ---------------------------------------------------------------------------
@@ -441,6 +476,49 @@ async function translateWithRetry(text, opts) {
 }
 
 // ---------------------------------------------------------------------------
+// AI translation (OpenAI GPT) — used when OPENAI_API_KEY is configured
+// ---------------------------------------------------------------------------
+
+// CS2-context system prompt — teaches the model to handle gaming slang properly
+const AI_SYSTEM_PROMPT = `You are a real-time chat translator for the game Counter-Strike 2 (CS2).
+Translate the user's message to the requested language.
+Rules:
+- Preserve all CS2 gaming terms exactly as-is (e.g. bhop, wh, awp, gg, ez, rush, eco, clutch, smoke, flash, plant, defuse, etc.).
+- Preserve player names, callout locations and clan tags exactly.
+- Return ONLY the translated text — no explanation, no quotes, no extra commentary.
+- If the message is already in the target language, return it unchanged.`;
+
+let _openaiClient = null;
+
+function getOpenAIClient() {
+  if (!OPENAI_API_KEY) return null;
+  if (!_openaiClient) {
+    _openaiClient = new OpenAI({ apiKey: OPENAI_API_KEY });
+  }
+  return _openaiClient;
+}
+
+async function aiTranslate(text, toLang) {
+  const client = getOpenAIClient();
+  if (!client) return null;
+
+  const langLabel = langName(toLang) || toLang.toUpperCase();
+  const completion = await client.chat.completions.create({
+    model: OPENAI_MODEL,
+    messages: [
+      { role: "system", content: AI_SYSTEM_PROMPT },
+      { role: "user", content: `Translate to ${langLabel}:\n${text}` },
+    ],
+    max_tokens: 256,
+    temperature: 0.2,
+  });
+
+  const translated = completion.choices?.[0]?.message?.content?.trim();
+  if (!translated) throw new Error("Empty response from OpenAI");
+  return translated;
+}
+
+// ---------------------------------------------------------------------------
 // Translation
 // ---------------------------------------------------------------------------
 
@@ -463,6 +541,28 @@ async function smartTranslate(text, toLang = "en") {
     return { ...cached, __fromCache: true };
   }
 
+  // --- Try AI translation first if an OpenAI key is configured ---
+  if (OPENAI_API_KEY) {
+    try {
+      const aiText = await aiTranslate(text, toLang);
+      if (aiText) {
+        const scriptHint = detectScriptHint(text) || "unknown";
+        const res = {
+          text: aiText,
+          from: { language: { iso: scriptHint } },
+          __aiTranslated: true,
+          __confidence: 1,
+        };
+        cacheSet(text, toLang, res);
+        return res;
+      }
+    } catch (err) {
+      // AI failed — log a warning and fall through to Google Translate
+      console.log(sym.warn, chalk.yellow(`AI translation failed (${err.message}), falling back to Google Translate.`));
+    }
+  }
+
+  // --- Google Translate fallback ---
   try {
     const scriptHint = detectScriptHint(text);
 
@@ -566,6 +666,7 @@ async function autoTranslateToConsole({ team, sender, message }) {
 
   const readableLang = originalLangReadable(res);
   const cacheTag = res.__fromCache ? chalk.gray(" [cached]") : "";
+  const aiTag = res.__aiTranslated ? chalk.magenta(" [AI]") : "";
   const confidence = res.__confidence ?? 0;
   const confTag = confidence < 0.5 ? chalk.yellow(` [low confidence: ${Math.round(confidence * 100)}%]`) : "";
 
@@ -574,6 +675,7 @@ async function autoTranslateToConsole({ team, sender, message }) {
     chalk.blueBright(`[${team}] ${sender} (${readableLang} → ${AUTO_TRANSLATE_TARGET.toUpperCase()}): `) +
     chalk.gray(res.text) +
     cacheTag +
+    aiTag +
     confTag
   );
 
@@ -628,7 +730,18 @@ function printCliHelp() {
   console.log("  cs_translate --add-exclusion <term>         # add term to translation exclusion list");
   console.log("  cs_translate --remove-exclusion <term>      # remove term from exclusion list");
   console.log("  cs_translate --list-exclusions              # show all excluded terms");
+  console.log("  cs_translate --set-openai-key <key>         # enable AI translation via OpenAI GPT");
+  console.log("  cs_translate --clear-openai-key             # remove OpenAI key, revert to Google Translate");
+  console.log("  cs_translate --set-openai-model <model>     # set OpenAI model (default: gpt-4o-mini)");
   console.log("  cs_translate --help                         # show this help");
+  console.log("");
+  console.log("AI Translation (OpenAI GPT):");
+  console.log("  When an OpenAI API key is set, all translations are handled by GPT with a CS2-aware");
+  console.log("  system prompt that preserves gaming terms (bhop, wh, awp, rush, smoke, clutch …).");
+  console.log("  If the AI request fails, the tool automatically falls back to Google Translate.");
+  console.log("  Translations made by the AI are tagged [AI] in the terminal.");
+  console.log("  Get a key at: https://platform.openai.com/api-keys");
+  console.log("  You can also set the key via the OPENAI_API_KEY environment variable.");
   console.log("");
   console.log("Features:");
   console.log("  - Translation caching: identical messages are not re-translated");
@@ -679,6 +792,11 @@ async function start() {
   console.log(sym.start, chalk.bold("CS2 Chat Auto Translator (watching console.log)\n"));
   console.log(chalk.gray("Configuration:"));
   console.log(chalk.white(`  logPath:             ${LOG_PATH}`));
+  if (OPENAI_API_KEY) {
+    console.log(chalk.white(`  translation:         `) + chalk.magentaBright(`OpenAI GPT (${OPENAI_MODEL}) [AI]`) + chalk.gray(" → Google Translate fallback"));
+  } else {
+    console.log(chalk.white(`  translation:         `) + chalk.cyan("Google Translate") + chalk.gray("  (set --set-openai-key to enable AI)"));
+  }
   console.log(chalk.white(`  gameChatOutput:      ${GAME_CHAT_OUTPUT}`));
   if (GAME_CHAT_OUTPUT) {
     console.log(chalk.white(`  cfgPath:             ${CFG_PATH}`));
@@ -739,6 +857,9 @@ if (args[0] === "--disable-game-chat-ru-output") { updateConfigKey("gameRuChatOu
 if (args[0] === "--add-exclusion" && args[1]) { addExclusionCli(args[1]); process.exit(0); }
 if (args[0] === "--remove-exclusion" && args[1]) { removeExclusionCli(args[1]); process.exit(0); }
 if (args[0] === "--list-exclusions") { listExclusionsCli(); process.exit(0); }
+if (args[0] === "--set-openai-key" && args[1]) { setOpenAIKeyCli(args[1]); process.exit(0); }
+if (args[0] === "--clear-openai-key") { clearOpenAIKeyCli(); process.exit(0); }
+if (args[0] === "--set-openai-model" && args[1]) { setOpenAIModelCli(args[1]); process.exit(0); }
 
 start().catch((err) => {
   console.error(chalk.red("Fatal error:"), err);
