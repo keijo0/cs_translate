@@ -1,0 +1,185 @@
+// =========================
+// 🔥 CONFIG
+// =========================
+const translationCache = new Map();
+
+const AI_SYSTEM_PROMPT = `You are a real-time chat translator for Counter-Strike 2 (CS2).
+
+Translate the message to the requested language.
+
+Rules:
+- Preserve tone, intensity, and offensiveness (do NOT sanitize insults or profanity).
+- Translate slang and swear words accurately.
+- Preserve all CS2 terms exactly (bhop, awp, rush, smoke, etc.).
+- Preserve player names and tags exactly.
+- Return ONLY valid JSON in this format:
+{ "lang": "xx", "text": "translation" }
+
+- "lang" must be the ISO 639-1 code of the detected source language.
+- If already in target language, return unchanged.`;
+
+// =========================
+// 🧠 HELPERS
+// =========================
+function isOllamaKey(key) {
+  return key === "ollama" || key?.startsWith("ollama:");
+}
+
+function getCacheKey(text, toLang) {
+  return `${text.trim().toLowerCase()}::${toLang}`;
+}
+
+function getCached(text, toLang) {
+  return translationCache.get(getCacheKey(text, toLang));
+}
+
+function setCached(text, toLang, value) {
+  translationCache.set(getCacheKey(text, toLang), value);
+
+  // prevent memory bloat
+  if (translationCache.size > 500) {
+    const firstKey = translationCache.keys().next().value;
+    translationCache.delete(firstKey);
+  }
+}
+
+function pickModel(text) {
+  if (/[а-яА-Я]/.test(text)) return "llama3";
+  if (/[äöå]/i.test(text)) return "llama3";
+  if (text.length < 20) return "llama3";
+  return OPENAI_MODEL;
+}
+
+function isSimple(text) {
+  return text.length < 12 && /^[a-zA-Z\s!?]+$/.test(text);
+}
+
+// =========================
+// 🤖 OPENAI CLIENT
+// =========================
+function getOpenAIClient() {
+  if (!OPENAI_API_KEY) return null;
+
+  if (!_openaiClient) {
+    const isOllama = isOllamaKey(OPENAI_API_KEY);
+
+    _openaiClient = new OpenAI({
+      apiKey: isOllama ? "sk-ollama" : OPENAI_API_KEY,
+      baseURL: isOllama ? "http://127.0.0.1:11434/v1" : undefined,
+    });
+  }
+
+  return _openaiClient;
+}
+
+// =========================
+// 🚀 MAIN TRANSLATE
+// =========================
+async function aiTranslate(text, toLang) {
+  if (!OPENAI_API_KEY) return null;
+
+  // ⚡ skip obvious English
+  if (isSimple(text)) {
+    return {
+      text,
+      from: { language: { iso: "en" } },
+      skipped: true
+    };
+  }
+
+  // 🧠 cache check
+  const cached = getCached(text, toLang);
+  if (cached) {
+    return { ...cached, cached: true };
+  }
+
+  const langLabel = langName(toLang) || toLang.toUpperCase();
+
+  const messages = [
+    { role: "system", content: AI_SYSTEM_PROMPT },
+    { role: "user", content: `Translate to ${langLabel}:\n${text}` }
+  ];
+
+  let raw;
+  const model = pickModel(text);
+
+  try {
+    // =========================
+    // 🦙 OLLAMA PATH
+    // =========================
+    if (isOllamaKey(OPENAI_API_KEY)) {
+      const res = await fetch("http://127.0.0.1:11434/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          max_tokens: 120,
+          temperature: 0.1,
+          top_p: 0.9,
+          stream: false
+        })
+      });
+
+      if (!res.ok) throw new Error(`Ollama HTTP ${res.status}`);
+
+      const data = await res.json();
+      raw = data.choices?.[0]?.message?.content?.trim();
+    }
+
+    // =========================
+    // 🌐 OPENAI PATH
+    // =========================
+    else {
+      const client = getOpenAIClient();
+      if (!client) return null;
+
+      const completion = await client.chat.completions.create({
+        model,
+        messages,
+        max_tokens: 120,
+        temperature: 0.1,
+        top_p: 0.9
+      });
+
+      raw = completion.choices?.[0]?.message?.content?.trim();
+    }
+
+    if (!raw) throw new Error("Empty response from AI");
+
+    // 🧼 clean possible markdown
+    const cleaned = raw.replace(/```json|```/g, "").trim();
+
+    let parsed;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (err) {
+      throw new Error(`Invalid JSON: ${cleaned}`);
+    }
+
+    if (!parsed.text) {
+      throw new Error("Missing translation text");
+    }
+
+    const result = {
+      text: parsed.text.trim(),
+      from: {
+        language: {
+          iso: parsed.lang || "unknown"
+        }
+      }
+    };
+
+    // 💾 cache it
+    setCached(text, toLang, result);
+
+    return result;
+
+  } catch (err) {
+    console.log("⚠️ AI translation failed:");
+    console.log(err);
+    return null;
+  }
+}
