@@ -15,6 +15,8 @@
  * - Automatically translates every chat message to English and prints it.
  * - Optionally writes translations to a CS2 cfg file so you can send them
  *   to game chat by pressing a bound key (e.g. F8 -> exec translated).
+ * - Optionally writes Russian translations to a separate cfg file
+ *   (e.g. F9 -> exec translated_ru).
  *
  * Requirements
  * ------------
@@ -30,17 +32,25 @@
  *   2. Add to CS2 autoexec.cfg or console:  bind "F8" "exec translated"
  *   3. Press F8 in-game whenever you want to send the latest translation.
  *
+ * To send Russian translations into game chat:
+ *   1. Run:  cs_translate --enable-game-chat-ru-output
+ *   2. Add to CS2 autoexec.cfg or console:  bind "F9" "exec translated_ru"
+ *   3. Press F9 in-game whenever you want to send the latest Russian translation.
+ *
  * CLI
  * ---
- *   cs_translate                            # start
- *   cs_translate --init-config             # create/refresh config
- *   cs_translate --set-log-path <path>     # set console.log path
- *   cs_translate --set-cfg-path <path>     # set translated.cfg path
+ *   cs_translate                               # start
+ *   cs_translate --init-config                # create/refresh config
+ *   cs_translate --set-log-path <path>        # set console.log path
+ *   cs_translate --set-cfg-path <path>        # set translated.cfg path
+ *   cs_translate --set-cfg-ru-path <path>     # set translated_ru.cfg path
  *   cs_translate --enable-game-chat-output
  *   cs_translate --disable-game-chat-output
- *   cs_translate --add-exclusion <term>    # add term to exclusion list
- *   cs_translate --remove-exclusion <term> # remove term from exclusion list
- *   cs_translate --list-exclusions         # show current exclusion list
+ *   cs_translate --enable-game-chat-ru-output
+ *   cs_translate --disable-game-chat-ru-output
+ *   cs_translate --add-exclusion <term>       # add term to exclusion list
+ *   cs_translate --remove-exclusion <term>    # remove term from exclusion list
+ *   cs_translate --list-exclusions            # show current exclusion list
  *   cs_translate --help
  */
 
@@ -88,19 +98,30 @@ function getDefaultCfgPath() {
   return path.join(base, "steamapps", "common", "Counter-Strike Global Offensive", "game", "csgo", "cfg", "translated.cfg");
 }
 
+function getDefaultCfgRuPath() {
+  const base = IS_WINDOWS
+    ? path.join(process.env["PROGRAMFILES(X86)"] || "C:\\Program Files (x86)", "Steam")
+    : path.join(os.homedir(), ".local", "share", "Steam");
+  return path.join(base, "steamapps", "common", "Counter-Strike Global Offensive", "game", "core", "cfg", "translated_ru.cfg");
+}
+
 const CONFIG_DIR = getDefaultConfigDir();
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 
 const defaultConfig = {
   logPath: getDefaultLogPath(),
   cfgPath: getDefaultCfgPath(),
+  cfgRuPath: getDefaultCfgRuPath(),
   gameChatOutput: false,
+  gameRuChatOutput: false,
   excludedTerms: [],
 };
 
 let LOG_PATH = "";
 let CFG_PATH = "";
+let CFG_RU_PATH = "";
 let GAME_CHAT_OUTPUT = false;
+let GAME_RU_CHAT_OUTPUT = false;
 let EXCLUDED_TERMS = [];
 
 // ---------------------------------------------------------------------------
@@ -116,7 +137,9 @@ function loadConfig() {
     return {
       logPath: cfg.logPath || defaultConfig.logPath,
       cfgPath: cfg.cfgPath || defaultConfig.cfgPath,
+      cfgRuPath: cfg.cfgRuPath || defaultConfig.cfgRuPath,
       gameChatOutput: typeof cfg.gameChatOutput === "boolean" ? cfg.gameChatOutput : defaultConfig.gameChatOutput,
+      gameRuChatOutput: typeof cfg.gameRuChatOutput === "boolean" ? cfg.gameRuChatOutput : defaultConfig.gameRuChatOutput,
       excludedTerms: Array.isArray(cfg.excludedTerms) ? cfg.excludedTerms : [],
     };
   } catch (err) {
@@ -131,7 +154,9 @@ function saveConfig(cfg) {
     const merged = {
       logPath: cfg.logPath || defaultConfig.logPath,
       cfgPath: cfg.cfgPath || defaultConfig.cfgPath,
+      cfgRuPath: cfg.cfgRuPath || defaultConfig.cfgRuPath,
       gameChatOutput: typeof cfg.gameChatOutput === "boolean" ? cfg.gameChatOutput : defaultConfig.gameChatOutput,
+      gameRuChatOutput: typeof cfg.gameRuChatOutput === "boolean" ? cfg.gameRuChatOutput : defaultConfig.gameRuChatOutput,
       excludedTerms: Array.isArray(cfg.excludedTerms) ? cfg.excludedTerms : [],
     };
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), "utf8");
@@ -155,17 +180,21 @@ function initConfigCli() {
   const merged = saveConfig(loadConfig());
   console.log(chalk.green("Config initialized/updated:"));
   console.log(`  ${CONFIG_PATH}`);
-  console.log(`  logPath:          ${merged.logPath}`);
-  console.log(`  cfgPath:          ${merged.cfgPath}`);
-  console.log(`  gameChatOutput:   ${merged.gameChatOutput}`);
-  console.log(`  excludedTerms:    ${merged.excludedTerms.length ? merged.excludedTerms.join(", ") : "(none)"}`);
+  console.log(`  logPath:             ${merged.logPath}`);
+  console.log(`  cfgPath:             ${merged.cfgPath}`);
+  console.log(`  cfgRuPath:           ${merged.cfgRuPath}`);
+  console.log(`  gameChatOutput:      ${merged.gameChatOutput}`);
+  console.log(`  gameRuChatOutput:    ${merged.gameRuChatOutput}`);
+  console.log(`  excludedTerms:       ${merged.excludedTerms.length ? merged.excludedTerms.join(", ") : "(none)"}`);
 }
 
 function setupFromConfig() {
   const cfg = loadConfig();
   LOG_PATH = cfg.logPath;
   CFG_PATH = cfg.cfgPath;
+  CFG_RU_PATH = cfg.cfgRuPath;
   GAME_CHAT_OUTPUT = cfg.gameChatOutput;
+  GAME_RU_CHAT_OUTPUT = cfg.gameRuChatOutput;
   EXCLUDED_TERMS = cfg.excludedTerms || [];
   if (!LOG_PATH) {
     console.error(chalk.red("No logPath configured. Use --set-log-path."));
@@ -468,6 +497,18 @@ function sendToGameChat(text) {
   }
 }
 
+function sendToGameChatRu(text) {
+  if (!GAME_RU_CHAT_OUTPUT) return;
+  try {
+    // Sanitize: strip characters that would break the say command
+    const safe = text.replace(/[;\n\r"]/g, " ").trim();
+    fs.writeFileSync(CFG_RU_PATH, `say "${safe}"\n`, "utf8");
+    console.log(sym.ok, chalk.green(`cfg_ru written: ${safe}`));
+  } catch (err) {
+    console.log(sym.warn, chalk.yellow(`Failed to write cfg_ru: ${err.message}`));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Auto-translate
 // ---------------------------------------------------------------------------
@@ -482,7 +523,19 @@ async function autoTranslateToConsole({ team, sender, message }) {
 
   const fromIso = (res.__forcedFrom || res.from?.language?.iso || "unknown").toLowerCase();
 
-  if (fromIso === AUTO_TRANSLATE_TARGET.toLowerCase()) return;
+  if (fromIso === AUTO_TRANSLATE_TARGET.toLowerCase()) {
+    // Message is already in English; still translate to Russian if needed
+    if (GAME_RU_CHAT_OUTPUT) {
+      const resRu = await smartTranslate(message, "ru");
+      if (!resRu.__excluded && !resRu.__failed) {
+        const fromIsoRu = (resRu.__forcedFrom || resRu.from?.language?.iso || "unknown").toLowerCase();
+        if (fromIsoRu !== "ru") {
+          sendToGameChatRu(`[${sender} - ${originalLangReadable(resRu)}] ${resRu.text}`);
+        }
+      }
+    }
+    return;
+  }
 
   const readableLang = originalLangReadable(res);
   const cacheTag = res.__fromCache ? chalk.gray(" [cached]") : "";
@@ -498,6 +551,14 @@ async function autoTranslateToConsole({ team, sender, message }) {
   );
 
   sendToGameChat(`[${sender} - ${readableLang}] ${res.text}`);
+
+  // Also translate to Russian if enabled, unless the source is already Russian
+  if (GAME_RU_CHAT_OUTPUT && fromIso !== "ru") {
+    const resRu = await smartTranslate(message, "ru");
+    if (!resRu.__excluded && !resRu.__failed) {
+      sendToGameChatRu(`[${sender} - ${readableLang}] ${resRu.text}`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -528,16 +589,19 @@ function printCliHelp() {
   console.log("CS2 Chat Auto Translator");
   console.log("");
   console.log("Usage:");
-  console.log("  cs_translate                              # start watching and translating");
-  console.log("  cs_translate --init-config               # create/refresh config.json");
-  console.log("  cs_translate --set-log-path <path>       # set CS2 console.log path");
-  console.log("  cs_translate --set-cfg-path <path>       # set translated.cfg output path");
-  console.log("  cs_translate --enable-game-chat-output   # write translations to cfg file");
-  console.log("  cs_translate --disable-game-chat-output  # disable cfg output (default)");
-  console.log("  cs_translate --add-exclusion <term>      # add term to translation exclusion list");
-  console.log("  cs_translate --remove-exclusion <term>   # remove term from exclusion list");
-  console.log("  cs_translate --list-exclusions           # show all excluded terms");
-  console.log("  cs_translate --help                      # show this help");
+  console.log("  cs_translate                                 # start watching and translating");
+  console.log("  cs_translate --init-config                  # create/refresh config.json");
+  console.log("  cs_translate --set-log-path <path>          # set CS2 console.log path");
+  console.log("  cs_translate --set-cfg-path <path>          # set translated.cfg output path");
+  console.log("  cs_translate --set-cfg-ru-path <path>       # set translated_ru.cfg output path");
+  console.log("  cs_translate --enable-game-chat-output      # write English translations to cfg file");
+  console.log("  cs_translate --disable-game-chat-output     # disable English cfg output (default)");
+  console.log("  cs_translate --enable-game-chat-ru-output   # write Russian translations to cfg_ru file");
+  console.log("  cs_translate --disable-game-chat-ru-output  # disable Russian cfg output (default)");
+  console.log("  cs_translate --add-exclusion <term>         # add term to translation exclusion list");
+  console.log("  cs_translate --remove-exclusion <term>      # remove term from exclusion list");
+  console.log("  cs_translate --list-exclusions              # show all excluded terms");
+  console.log("  cs_translate --help                         # show this help");
   console.log("");
   console.log("Features:");
   console.log("  - Translation caching: identical messages are not re-translated");
@@ -546,10 +610,15 @@ function printCliHelp() {
   console.log("  - Script detection: Arabic, CJK, Cyrillic, Devanagari, Georgian, Greek, Hebrew, Thai");
   console.log("  - Exclusion list: common CS2 terms (gg, ez, gl hf …) are never translated");
   console.log("");
-  console.log("To send translations into game chat:");
+  console.log("To send English translations into game chat:");
   console.log("  1. Run:  cs_translate --enable-game-chat-output");
   console.log("  2. In CS2 console or autoexec.cfg:  bind \"F8\" \"exec translated\"");
-  console.log("  3. Press F8 in-game to send the latest translation to chat.");
+  console.log("  3. Press F8 in-game to send the latest English translation to chat.");
+  console.log("");
+  console.log("To send Russian translations into game chat:");
+  console.log("  1. Run:  cs_translate --enable-game-chat-ru-output");
+  console.log("  2. In CS2 console or autoexec.cfg:  bind \"F9\" \"exec translated_ru\"");
+  console.log("  3. Press F9 in-game to send the latest Russian translation to chat.");
   console.log("");
   console.log(`Config: ${CONFIG_PATH}`);
 }
@@ -574,16 +643,28 @@ async function start() {
       fs.mkdirSync(path.dirname(CFG_PATH), { recursive: true });
     } catch {}
   }
+  if (GAME_RU_CHAT_OUTPUT) {
+    try {
+      fs.mkdirSync(path.dirname(CFG_RU_PATH), { recursive: true });
+    } catch {}
+  }
 
   console.log(sym.start, chalk.bold("CS2 Chat Auto Translator (watching console.log)\n"));
   console.log(chalk.gray("Configuration:"));
-  console.log(chalk.white(`  logPath:          ${LOG_PATH}`));
-  console.log(chalk.white(`  gameChatOutput:   ${GAME_CHAT_OUTPUT}`));
+  console.log(chalk.white(`  logPath:             ${LOG_PATH}`));
+  console.log(chalk.white(`  gameChatOutput:      ${GAME_CHAT_OUTPUT}`));
   if (GAME_CHAT_OUTPUT) {
-    console.log(chalk.white(`  cfgPath:          ${CFG_PATH}`));
+    console.log(chalk.white(`  cfgPath:             ${CFG_PATH}`));
     console.log("");
-    console.log(chalk.yellow("  ⚡ Game chat output enabled."));
+    console.log(chalk.yellow("  ⚡ Game chat output (English) enabled."));
     console.log(chalk.yellow(`  ⚡ Make sure CS2 has:  bind "F8" "exec translated"  in autoexec.cfg`));
+  }
+  console.log(chalk.white(`  gameRuChatOutput:    ${GAME_RU_CHAT_OUTPUT}`));
+  if (GAME_RU_CHAT_OUTPUT) {
+    console.log(chalk.white(`  cfgRuPath:           ${CFG_RU_PATH}`));
+    console.log("");
+    console.log(chalk.yellow("  ⚡ Game chat output (Russian) enabled."));
+    console.log(chalk.yellow(`  ⚡ Make sure CS2 has:  bind "F9" "exec translated_ru"  in autoexec.cfg`));
   }
   console.log("");
 
@@ -615,12 +696,19 @@ if (args.includes("--help") || args.includes("-h")) { printCliHelp(); process.ex
 if (args[0] === "--init-config") { initConfigCli(); process.exit(0); }
 if (args[0] === "--set-log-path" && args[1]) { updateConfigKey("logPath", path.resolve(args[1])); process.exit(0); }
 if (args[0] === "--set-cfg-path" && args[1]) { updateConfigKey("cfgPath", path.resolve(args[1])); process.exit(0); }
+if (args[0] === "--set-cfg-ru-path" && args[1]) { updateConfigKey("cfgRuPath", path.resolve(args[1])); process.exit(0); }
 if (args[0] === "--enable-game-chat-output") {
   updateConfigKey("gameChatOutput", true);
   console.log(chalk.yellow('Add  bind "F8" "exec translated"  to CS2 autoexec.cfg or console.'));
   process.exit(0);
 }
 if (args[0] === "--disable-game-chat-output") { updateConfigKey("gameChatOutput", false); process.exit(0); }
+if (args[0] === "--enable-game-chat-ru-output") {
+  updateConfigKey("gameRuChatOutput", true);
+  console.log(chalk.yellow('Add  bind "F9" "exec translated_ru"  to CS2 autoexec.cfg or console.'));
+  process.exit(0);
+}
+if (args[0] === "--disable-game-chat-ru-output") { updateConfigKey("gameRuChatOutput", false); process.exit(0); }
 if (args[0] === "--add-exclusion" && args[1]) { addExclusionCli(args[1]); process.exit(0); }
 if (args[0] === "--remove-exclusion" && args[1]) { removeExclusionCli(args[1]); process.exit(0); }
 if (args[0] === "--list-exclusions") { listExclusionsCli(); process.exit(0); }
