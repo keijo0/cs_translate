@@ -545,7 +545,7 @@ function translitRuToEn(text) {
 }
 async function aiTranslate(text, toLang) {
   if (!OPENAI_API_KEY) return null;
-	const translitEn = translitRuToEn(text);
+  const translitEn = translitRuToEn(text);
 if (translitEn && toLang === "en") {
   return {
     text: translitEn,
@@ -568,7 +568,7 @@ if (translitEn && toLang === "en") {
   const langLabel = langName(toLang) || toLang.toUpperCase();
   const messages = [
     { role: "system", content: AI_SYSTEM_PROMPT },
-   { role: "user", content: `Target language: ${langLabel}\nMessage: ${text}\nReturn JSON only.` },
+    { role: "user", content: `Target language: ${langLabel}\nMessage: ${text}\nReturn JSON only.` },
   ];
 
   let raw;
