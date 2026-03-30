@@ -47,13 +47,38 @@ By default it is **read-only** — but it also has an **optional game chat outpu
     🌍 [T] Player123 (Russian → EN): Hello, how are you?
     ```
 
-- 💬 **Optional CS2 game chat output**
-  - When enabled, each translation is also sent into the CS2 game chat via the game's built-in **netcon** TCP interface.
+- 💬 **Optional CS2 game chat output (cfg file)**
+  - When enabled, each English translation is written to `translated.cfg` so you can send it to game chat by pressing a key you bind in CS2.
   - Game chat output is **disabled by default** — enable it with one command:
     ```bash
     cs_translate --enable-game-chat-output
     ```
-  - Requires CS2 to be launched with `-netconport 2121` (or your chosen port).
+  - Then bind a key in CS2 (autoexec.cfg or console):
+    ```text
+    bind "F8" "exec translated"
+    ```
+  - Press **F8** in-game to send the latest English translation to chat.
+  - The cfg output path defaults to `<Steam>/steamapps/common/Counter-Strike Global Offensive/game/csgo/cfg/translated.cfg` and can be overridden:
+    ```bash
+    cs_translate --set-cfg-path /custom/path/translated.cfg
+    ```
+
+- 🇷🇺 **Russian translation output**
+  - When enabled, each message is also translated to Russian and written to `translated_ru.cfg`.
+  - Useful for Russian-speaking communities who want a local translation alongside the English one.
+  - Enable with:
+    ```bash
+    cs_translate --enable-game-chat-ru-output
+    ```
+  - Then bind a key in CS2:
+    ```text
+    bind "F9" "exec translated_ru"
+    ```
+  - Press **F9** in-game to send the latest Russian translation to chat.
+  - The Russian cfg path defaults to `<Steam>/steamapps/common/Counter-Strike Global Offensive/game/core/cfg/translated_ru.cfg` and can be overridden:
+    ```bash
+    cs_translate --set-cfg-ru-path /custom/path/translated_ru.cfg
+    ```
 
 - 🌍 **Improved language detection**
   - Uses Google's language detection via `google-translate-api-x`.
@@ -101,7 +126,7 @@ By default it is **read-only** — but it also has an **optional game chat outpu
    - It logs the original message to the terminal.
    - It auto-translates the message to the configured target language (default `en`).
    - If the source language is different from the target, it prints the translation.
-   - **If game chat output is enabled**, the translation is also sent into CS2 game chat using `say <[Player - Language] translated text>` via the netcon TCP interface.
+   - **If game chat output is enabled**, the translation is written to `translated.cfg`; press the bound key (e.g. F8) in CS2 to send it to chat.
 4. Non-chat lines are ignored.
 
 ---
@@ -119,6 +144,7 @@ By default it is **read-only** — but it also has an **optional game chat outpu
 - **Node dependencies (handled via `npm install`)**
   - `google-translate-api-x` (translation)
   - `chalk` (colored terminal output)
+  - `openai` (optional AI translation — only used when an OpenAI API key is configured)
 
 ---
 
@@ -132,7 +158,7 @@ You must enable `-condebug`:
 3. Under **Launch Options**, add:
    ```text
    -condebug
-
+   ```
 4. Start CS2 once so that the `console.log` file is created.
 
 Typical default locations for `console.log` are:
@@ -190,8 +216,13 @@ You can (and should) override this path in the `cs_translate` config if your set
 ```json
 {
   "logPath": "/full/path/to/your/cs2/console.log",
+  "cfgPath": "/full/path/to/csgo/cfg/translated.cfg",
+  "cfgRuPath": "/full/path/to/csgo/cfg/translated_ru.cfg",
   "gameChatOutput": false,
-  "netconPort": 2121
+  "gameRuChatOutput": false,
+  "excludedTerms": [],
+  "openaiApiKey": "",
+  "openaiModel": "gpt-4o-mini"
 }
 ```
 
@@ -199,7 +230,14 @@ On Windows it will look like:
 
 ```json
 {
-  "logPath": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Counter-Strike Global Offensive\\game\\csgo\\console.log"
+  "logPath": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Counter-Strike Global Offensive\\game\\csgo\\console.log",
+  "cfgPath": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Counter-Strike Global Offensive\\game\\csgo\\cfg\\translated.cfg",
+  "cfgRuPath": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Counter-Strike Global Offensive\\game\\core\\cfg\\translated_ru.cfg",
+  "gameChatOutput": false,
+  "gameRuChatOutput": false,
+  "excludedTerms": [],
+  "openaiApiKey": "",
+  "openaiModel": "gpt-4o-mini"
 }
 ```
 
@@ -227,22 +265,48 @@ You rarely need to edit `config.json` by hand. The CLI provides helpers:
   cs_translate --set-log-path "C:\full\path\to\console.log"
   ```
 
-* Enable sending translations into CS2 game chat:
+* Enable sending English translations to CS2 game chat via cfg file:
 
   ```bash
   cs_translate --enable-game-chat-output
   ```
 
-* Disable game chat output (default):
+* Disable English game chat output (default):
 
   ```bash
   cs_translate --disable-game-chat-output
   ```
 
-* Change the netcon port (must match `-netconport` in CS2 launch options):
+* Set the path to `translated.cfg` (English output):
 
   ```bash
-  cs_translate --set-netcon-port 2121
+  cs_translate --set-cfg-path /path/to/csgo/cfg/translated.cfg
+  ```
+
+* Enable sending Russian translations to CS2 game chat via cfg file:
+
+  ```bash
+  cs_translate --enable-game-chat-ru-output
+  ```
+
+* Disable Russian game chat output (default):
+
+  ```bash
+  cs_translate --disable-game-chat-ru-output
+  ```
+
+* Set the path to `translated_ru.cfg` (Russian output):
+
+  ```bash
+  cs_translate --set-cfg-ru-path /path/to/csgo/cfg/translated_ru.cfg
+  ```
+
+* Manage OpenAI API key for AI-powered translation:
+
+  ```bash
+  cs_translate --set-openai-key sk-...your-key...
+  cs_translate --clear-openai-key
+  cs_translate --set-openai-model gpt-4o
   ```
 
 * Manage translation exclusions (custom terms that should never be translated):
@@ -359,14 +423,10 @@ You should see a banner similar to:
 🚀 CS2 Chat Auto Translator (watching console.log)
 
 Configuration:
-  logPath:          /full/path/to/console.log
-  gameChatOutput:   false
-  netconPort:       2121
-
-Behavior:
-  • All detected chat messages are translated to 'EN' and printed here.
-  • Game chat output is disabled — translations are shown in this terminal only.
-  • To enable in-game chat output run:  cs_translate --enable-game-chat-output
+  logPath:             /full/path/to/console.log
+  translation:         Google Translate  (set --set-openai-key to enable AI)
+  gameChatOutput:      false
+  gameRuChatOutput:    false
 ```
 
 Leave this terminal open while you play CS2.
@@ -385,21 +445,21 @@ If the source language is already English (or your configured target), the tool 
 
 ### 3. (Optional) Enable game chat output
 
-To have translations automatically appear in the CS2 game chat for all players to see:
+To have English translations appear in the CS2 game chat:
 
-1. Add `-netconport 2121` to your CS2 Steam launch options (alongside `-condebug`):
-
-   ```text
-   -condebug -netconport 2121
-   ```
-
-2. Enable game chat output in cs_translate:
+1. Enable game chat output in cs_translate:
 
    ```bash
    cs_translate --enable-game-chat-output
    ```
 
-3. Start cs_translate and CS2. When a foreign-language message is detected and translated, the translation will be sent into game chat as:
+2. In CS2, bind a key to execute the translated cfg (add to `autoexec.cfg` or run in the CS2 console):
+
+   ```text
+   bind "F8" "exec translated"
+   ```
+
+3. Press **F8** in-game whenever you want to send the latest English translation to chat:
 
    ```
    [Ivan - Russian] Hello, how are you?
@@ -409,6 +469,30 @@ To disable game chat output again:
 
 ```bash
 cs_translate --disable-game-chat-output
+```
+
+### 4. (Optional) Enable Russian game chat output
+
+To also send Russian translations into CS2 game chat:
+
+1. Enable Russian game chat output:
+
+   ```bash
+   cs_translate --enable-game-chat-ru-output
+   ```
+
+2. In CS2, bind a key to execute the Russian translated cfg:
+
+   ```text
+   bind "F9" "exec translated_ru"
+   ```
+
+3. Press **F9** in-game to send the latest Russian translation to chat.
+
+To disable:
+
+```bash
+cs_translate --disable-game-chat-ru-output
 ```
 
 ---
@@ -482,5 +566,3 @@ If you publish a modified version, please respect the project’s license.
 
 `cs_translate` is open source software.
 See the `LICENSE` file in the repository for full license details.
-
-```

@@ -58,13 +58,9 @@ import fs from "fs";
 import readline from "readline";
 import path from "path";
 import os from "os";
-import { fileURLToPath } from "url";
 import chalk from "chalk";
 import translate from "google-translate-api-x";
 import OpenAI from "openai";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // ---------------------------------------------------------------------------
 // Platform detection
@@ -85,29 +81,38 @@ function getDefaultConfigDir() {
   return path.join(xdg || path.join(os.homedir(), ".config"), "cs2-chat-translator");
 }
 
-function getDefaultLogPath() {
-  const base = IS_WINDOWS
+function getSteamBasePath() {
+  return IS_WINDOWS
     ? path.join(process.env["PROGRAMFILES(X86)"] || "C:\\Program Files (x86)", "Steam")
     : path.join(os.homedir(), ".local", "share", "Steam");
-  return path.join(base, "steamapps", "common", "Counter-Strike Global Offensive", "game", "csgo", "console.log");
+}
+
+function getDefaultLogPath() {
+  return path.join(getSteamBasePath(), "steamapps", "common", "Counter-Strike Global Offensive", "game", "csgo", "console.log");
 }
 
 function getDefaultCfgPath() {
-  const base = IS_WINDOWS
-    ? path.join(process.env["PROGRAMFILES(X86)"] || "C:\\Program Files (x86)", "Steam")
-    : path.join(os.homedir(), ".local", "share", "Steam");
-  return path.join(base, "steamapps", "common", "Counter-Strike Global Offensive", "game", "csgo", "cfg", "translated.cfg");
+  return path.join(getSteamBasePath(), "steamapps", "common", "Counter-Strike Global Offensive", "game", "csgo", "cfg", "translated.cfg");
 }
 
 function getDefaultCfgRuPath() {
-  const base = IS_WINDOWS
-    ? path.join(process.env["PROGRAMFILES(X86)"] || "C:\\Program Files (x86)", "Steam")
-    : path.join(os.homedir(), ".local", "share", "Steam");
-  return path.join(base, "steamapps", "common", "Counter-Strike Global Offensive", "game", "core", "cfg", "translated_ru.cfg");
+  return path.join(getSteamBasePath(), "steamapps", "common", "Counter-Strike Global Offensive", "game", "core", "cfg", "translated_ru.cfg");
 }
 
 const CONFIG_DIR = getDefaultConfigDir();
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
+
+/**
+ * @typedef {Object} AppConfig
+ * @property {string}   logPath           - Absolute path to CS2 console.log
+ * @property {string}   cfgPath           - Absolute path to translated.cfg (English output)
+ * @property {string}   cfgRuPath         - Absolute path to translated_ru.cfg (Russian output)
+ * @property {boolean}  gameChatOutput    - Write English translations to cfgPath
+ * @property {boolean}  gameRuChatOutput  - Write Russian translations to cfgRuPath
+ * @property {string[]} excludedTerms     - User-defined terms that bypass translation
+ * @property {string}   openaiApiKey      - OpenAI API key (empty = use Google Translate)
+ * @property {string}   openaiModel       - OpenAI model identifier (default: gpt-4o-mini)
+ */
 
 const defaultConfig = {
   logPath: getDefaultLogPath(),
@@ -133,22 +138,30 @@ let OPENAI_MODEL = "gpt-4o-mini";
 // Config load/save
 // ---------------------------------------------------------------------------
 
+/**
+ * Validate and fill missing fields in a raw config object.
+ * @param {Partial<AppConfig>} cfg
+ * @returns {AppConfig}
+ */
+function normalizeConfig(cfg) {
+  return {
+    logPath: cfg.logPath || defaultConfig.logPath,
+    cfgPath: cfg.cfgPath || defaultConfig.cfgPath,
+    cfgRuPath: cfg.cfgRuPath || defaultConfig.cfgRuPath,
+    gameChatOutput: typeof cfg.gameChatOutput === "boolean" ? cfg.gameChatOutput : defaultConfig.gameChatOutput,
+    gameRuChatOutput: typeof cfg.gameRuChatOutput === "boolean" ? cfg.gameRuChatOutput : defaultConfig.gameRuChatOutput,
+    excludedTerms: Array.isArray(cfg.excludedTerms) ? cfg.excludedTerms : [],
+    openaiApiKey: typeof cfg.openaiApiKey === "string" ? cfg.openaiApiKey : "",
+    openaiModel: typeof cfg.openaiModel === "string" && cfg.openaiModel ? cfg.openaiModel : defaultConfig.openaiModel,
+  };
+}
+
 function loadConfig() {
   try {
     if (!fs.existsSync(CONFIG_PATH)) return { ...defaultConfig };
     const txt = fs.readFileSync(CONFIG_PATH, "utf8").trim();
     if (!txt) return { ...defaultConfig };
-    const cfg = JSON.parse(txt);
-    return {
-      logPath: cfg.logPath || defaultConfig.logPath,
-      cfgPath: cfg.cfgPath || defaultConfig.cfgPath,
-      cfgRuPath: cfg.cfgRuPath || defaultConfig.cfgRuPath,
-      gameChatOutput: typeof cfg.gameChatOutput === "boolean" ? cfg.gameChatOutput : defaultConfig.gameChatOutput,
-      gameRuChatOutput: typeof cfg.gameRuChatOutput === "boolean" ? cfg.gameRuChatOutput : defaultConfig.gameRuChatOutput,
-      excludedTerms: Array.isArray(cfg.excludedTerms) ? cfg.excludedTerms : [],
-      openaiApiKey: typeof cfg.openaiApiKey === "string" ? cfg.openaiApiKey : "",
-      openaiModel: typeof cfg.openaiModel === "string" && cfg.openaiModel ? cfg.openaiModel : defaultConfig.openaiModel,
-    };
+    return normalizeConfig(JSON.parse(txt));
   } catch (err) {
     console.error(chalk.red(`Failed to load config: ${err.message}`));
     return { ...defaultConfig };
@@ -158,16 +171,7 @@ function loadConfig() {
 function saveConfig(cfg) {
   try {
     fs.mkdirSync(CONFIG_DIR, { recursive: true });
-    const merged = {
-      logPath: cfg.logPath || defaultConfig.logPath,
-      cfgPath: cfg.cfgPath || defaultConfig.cfgPath,
-      cfgRuPath: cfg.cfgRuPath || defaultConfig.cfgRuPath,
-      gameChatOutput: typeof cfg.gameChatOutput === "boolean" ? cfg.gameChatOutput : defaultConfig.gameChatOutput,
-      gameRuChatOutput: typeof cfg.gameRuChatOutput === "boolean" ? cfg.gameRuChatOutput : defaultConfig.gameRuChatOutput,
-      excludedTerms: Array.isArray(cfg.excludedTerms) ? cfg.excludedTerms : [],
-      openaiApiKey: typeof cfg.openaiApiKey === "string" ? cfg.openaiApiKey : "",
-      openaiModel: typeof cfg.openaiModel === "string" && cfg.openaiModel ? cfg.openaiModel : defaultConfig.openaiModel,
-    };
+    const merged = normalizeConfig(cfg);
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), "utf8");
     return merged;
   } catch (err) {
@@ -332,6 +336,12 @@ const CYRILLIC_LANGUAGES = new Set([
 // Minimum character length a message must have to attempt translation.
 // Very short messages (1–2 chars) cannot be reliably detected or translated.
 const MIN_TRANSLATE_LENGTH = 3;
+
+// Translations scored below this threshold are tagged [low confidence] in the terminal.
+const CONFIDENCE_THRESHOLD = 0.5;
+
+// Regex that matches CS2 chat lines: "[CT|T|ALL] Player: message"
+const CHAT_LINE_REGEX = /\[(CT|T|ALL)\]\s+([^:]+):\s(.+)/;
 
 // ---------------------------------------------------------------------------
 // Script detection regexes (used to hint at source language)
@@ -668,7 +678,7 @@ async function autoTranslateToConsole({ team, sender, message }) {
   const cacheTag = res.__fromCache ? chalk.gray(" [cached]") : "";
   const aiTag = res.__aiTranslated ? chalk.magenta(" [AI]") : "";
   const confidence = res.__confidence ?? 0;
-  const confTag = confidence < 0.5 ? chalk.yellow(` [low confidence: ${Math.round(confidence * 100)}%]`) : "";
+  const confTag = confidence < CONFIDENCE_THRESHOLD ? chalk.yellow(` [low confidence: ${Math.round(confidence * 100)}%]`) : "";
 
   console.log(
     sym.trans,
@@ -695,7 +705,7 @@ async function autoTranslateToConsole({ team, sender, message }) {
 // ---------------------------------------------------------------------------
 
 async function handleLine(line) {
-  const match = line.match(/\[(CT|T|ALL)\]\s+([^:]+):\s(.+)/);
+  const match = line.match(CHAT_LINE_REGEX);
   if (!match) return;
 
   const [, team, player, messageRaw] = match;
@@ -837,29 +847,37 @@ async function start() {
 
 const args = process.argv.slice(2);
 
-if (args.includes("--help") || args.includes("-h")) { printCliHelp(); process.exit(0); }
-if (args[0] === "--init-config") { initConfigCli(); process.exit(0); }
-if (args[0] === "--set-log-path" && args[1]) { updateConfigKey("logPath", path.resolve(args[1])); process.exit(0); }
-if (args[0] === "--set-cfg-path" && args[1]) { updateConfigKey("cfgPath", path.resolve(args[1])); process.exit(0); }
-if (args[0] === "--set-cfg-ru-path" && args[1]) { updateConfigKey("cfgRuPath", path.resolve(args[1])); process.exit(0); }
-if (args[0] === "--enable-game-chat-output") {
-  updateConfigKey("gameChatOutput", true);
-  console.log(chalk.yellow('Add  bind "F8" "exec translated"  to CS2 autoexec.cfg or console.'));
+/** @type {Record<string, () => void>} */
+const CLI_COMMANDS = {
+  "--help":                      () => { printCliHelp(); },
+  "-h":                          () => { printCliHelp(); },
+  "--init-config":               () => { initConfigCli(); },
+  "--set-log-path":              () => { if (args[1]) updateConfigKey("logPath", path.resolve(args[1])); },
+  "--set-cfg-path":              () => { if (args[1]) updateConfigKey("cfgPath", path.resolve(args[1])); },
+  "--set-cfg-ru-path":           () => { if (args[1]) updateConfigKey("cfgRuPath", path.resolve(args[1])); },
+  "--enable-game-chat-output":   () => {
+    updateConfigKey("gameChatOutput", true);
+    console.log(chalk.yellow('Add  bind "F8" "exec translated"  to CS2 autoexec.cfg or console.'));
+  },
+  "--disable-game-chat-output":  () => { updateConfigKey("gameChatOutput", false); },
+  "--enable-game-chat-ru-output": () => {
+    updateConfigKey("gameRuChatOutput", true);
+    console.log(chalk.yellow('Add  bind "F9" "exec translated_ru"  to CS2 autoexec.cfg or console.'));
+  },
+  "--disable-game-chat-ru-output": () => { updateConfigKey("gameRuChatOutput", false); },
+  "--add-exclusion":             () => { if (args[1]) addExclusionCli(args[1]); },
+  "--remove-exclusion":          () => { if (args[1]) removeExclusionCli(args[1]); },
+  "--list-exclusions":           () => { listExclusionsCli(); },
+  "--set-openai-key":            () => { if (args[1]) setOpenAIKeyCli(args[1]); },
+  "--clear-openai-key":          () => { clearOpenAIKeyCli(); },
+  "--set-openai-model":          () => { if (args[1]) setOpenAIModelCli(args[1]); },
+};
+
+const handler = CLI_COMMANDS[args[0]];
+if (handler) {
+  handler();
   process.exit(0);
 }
-if (args[0] === "--disable-game-chat-output") { updateConfigKey("gameChatOutput", false); process.exit(0); }
-if (args[0] === "--enable-game-chat-ru-output") {
-  updateConfigKey("gameRuChatOutput", true);
-  console.log(chalk.yellow('Add  bind "F9" "exec translated_ru"  to CS2 autoexec.cfg or console.'));
-  process.exit(0);
-}
-if (args[0] === "--disable-game-chat-ru-output") { updateConfigKey("gameRuChatOutput", false); process.exit(0); }
-if (args[0] === "--add-exclusion" && args[1]) { addExclusionCli(args[1]); process.exit(0); }
-if (args[0] === "--remove-exclusion" && args[1]) { removeExclusionCli(args[1]); process.exit(0); }
-if (args[0] === "--list-exclusions") { listExclusionsCli(); process.exit(0); }
-if (args[0] === "--set-openai-key" && args[1]) { setOpenAIKeyCli(args[1]); process.exit(0); }
-if (args[0] === "--clear-openai-key") { clearOpenAIKeyCli(); process.exit(0); }
-if (args[0] === "--set-openai-model" && args[1]) { setOpenAIModelCli(args[1]); process.exit(0); }
 
 start().catch((err) => {
   console.error(chalk.red("Fatal error:"), err);
