@@ -333,15 +333,40 @@ const BUILTIN_EXCLUSIONS = [
   "gl", "hf", "gl hf", "glhf",
   // In-game callouts / strategy
   "rush b", "eco", "force", "save", "ct", "t", "ff",
-  // Weapons
-  "awp", "ak", "m4",
+  // Weapons — rifles
+  "awp", "ak", "ak47", "ak-47", "m4", "m4a1", "m4a4", "famas", "galil", "galil ar",
+  "sg", "sg553", "aug", "scout", "ssg", "ssg08",
+  // Weapons — pistols
+  "deagle", "glock", "usp", "usp-s", "p250", "p2000", "tec-9", "tec9",
+  "five-seven", "cz", "cz75", "r8",
+  // Weapons — smgs / heavy
+  "mp5", "mp9", "mac-10", "mac10", "ump", "ump45", "p90", "bizon", "pp-bizon",
+  "nova", "xm", "xm1014", "mag7", "mag-7", "negev", "m249",
+  // Weapons — knife / misc
+  "knife", "zeus", "taser",
+  // Grenades
+  "flash", "flashes", "smoke", "smokes", "he", "nade", "nades",
+  "molly", "molotov", "incendiary", "decoy",
+  // Movement / mechanics (universally used in Russian CS2 community)
+  "bhop", "bunnyhop", "strafe", "surf", "boost",
+  // Hacking / cheat accusations (same word used in Russian)
+  "wh", "wallhack", "aimbot", "hack", "hacker", "cheater", "cheats", "cheat",
+  "spinbot", "rage", "legit", "closet",
+  // Game events / objectives
+  "plant", "defuse", "bomb", "kit", "drop", "retake",
+  "clutch", "entry", "peek", "flank", "rotate",
+  // Map callouts (used verbatim by Russian players)
+  "mid", "long", "short", "cat", "jungle", "halls", "tunnel",
+  "pit", "banana", "ramp", "van", "window", "bench",
+  // Meta / matchmaking
+  "mm", "faceit", "esea", "rank", "elo", "adr", "kd", "kda", "mvp", "ace", "rws",
   // Emotes / reactions
   "lol", "lmao", "lmfao", "omg", "wtf", "rip", "oof",
   "lul", "kek", "xd", "pog", "poggers", "ff",
   // Acknowledgements
   "ok", "ok.", "k", "y", "n", "no", "yes", "np", "ty", "thx", "pls", "plz",
   // Common non-translatable short terms
-  "gg", "go", "go go",
+  "go", "go go",
 ];
 
 // ---------------------------------------------------------------------------
