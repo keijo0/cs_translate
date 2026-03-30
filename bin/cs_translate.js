@@ -656,8 +656,8 @@ async function autoTranslateToConsole({ team, sender, message }) {
     return;
   }
 
-  if (fromIso === "ru") {
-    // Message is already in Russian; write as-is to translated_ru.cfg, no English translation
+  if (CYRILLIC_LANGUAGES.has(fromIso)) {
+    // Message is Cyrillic (Russian or related language); write as-is to translated_ru.cfg, no English translation
     if (GAME_RU_CHAT_OUTPUT) {
       sendToGameChatRu(`[${sender} - ${originalLangReadable(res)}] ${message}`);
     }
