@@ -651,7 +651,8 @@ async function autoTranslateToConsole({ team, sender, message }) {
   const fromIso = (res.__forcedFrom || res.from?.language?.iso || "unknown").toLowerCase();
 
   if (fromIso === AUTO_TRANSLATE_TARGET.toLowerCase()) {
-    // Message is already in English; still translate to Russian if needed
+    // Message is already in English; write to translated.cfg and translate to Russian if needed
+    sendToGameChat(`[${sender} - ${originalLangReadable(res)}] ${res.text}`);
     if (GAME_RU_CHAT_OUTPUT) {
       const resRu = await smartTranslate(message, "ru");
       if (!resRu.__excluded && !resRu.__failed) {
