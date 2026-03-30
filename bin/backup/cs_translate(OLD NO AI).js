@@ -128,8 +128,6 @@ let GAME_RU_CHAT_OUTPUT = false;
 let EXCLUDED_TERMS = [];
 let OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 let OPENAI_MODEL = "gpt-4o-mini";
-let LAST_CFG_TEXT = "";
-let LAST_CFG_RU_TEXT = "";
 
 // ---------------------------------------------------------------------------
 // Config load/save
@@ -482,151 +480,42 @@ async function translateWithRetry(text, opts) {
 // ---------------------------------------------------------------------------
 
 // CS2-context system prompt — teaches the model to handle gaming slang properly
-const AI_SYSTEM_PROMPT = `You are a real-time chat translator for Counter-Strike 2 (CS2).
-
-Translate the message to the requested language.
-
+const AI_SYSTEM_PROMPT = `You are a real-time chat translator for the game Counter-Strike 2 (CS2).
+Translate the user's message to the requested language.
 Rules:
-- Preserve tone and slang.
-- Preserve all CS2 terms exactly.
-- Preserve player names and tags exactly.
-- Do not refuse, explain, warn, moralize, or add commentary.
-- Output ONLY valid minified JSON.
-- The JSON format must be exactly:
-{"lang":"xx","text":"translation"}
+- Preserve all CS2 gaming terms exactly as-is (e.g. bhop, wh, awp, gg, ez, rush, eco, clutch, smoke, flash, plant, defuse, etc.).
+- Preserve player names, callout locations and clan tags exactly.
+- Return ONLY the translated text — no explanation, no quotes, no extra commentary.
+- If the message is already in the target language, return it unchanged.`;
 
-If already in the target language, return the original text in that JSON format.`;
 let _openaiClient = null;
-
-function isOllamaKey(key) {
-  return key === "ollama" || key?.startsWith("mastral:");
-}
-
-function pickModel(text) {
-  if (/[а-яА-Я]/.test(text)) return "llama3";
-  if (/[äöå]/i.test(text)) return "llama3";
-  if (text.length < 20) return "llama3";
-  return OPENAI_MODEL;
-}
-
-function isSimple(text) {
-  return text.length < 12 && /^[a-zA-Z\s!?]+$/.test(text);
-}
 
 function getOpenAIClient() {
   if (!OPENAI_API_KEY) return null;
   if (!_openaiClient) {
-    const isOllama = isOllamaKey(OPENAI_API_KEY);
-    _openaiClient = new OpenAI({
-      apiKey: isOllama ? "sk-mastral" : OPENAI_API_KEY,
-      baseURL: isOllama ? "http://127.0.0.1:11434/v1" : undefined,
-    });
+    _openaiClient = new OpenAI({ apiKey: OPENAI_API_KEY });
   }
   return _openaiClient;
 }
 
-function translitRuToEn(text) {
-  const lower = text.toLowerCase().trim();
-
-  const map = {
-    "privet": "hi",
-    "poka": "bye",
-    "spasibo": "thanks",
-    "blyat": "fuck",
-    "blayt": "fuck",
-    "suka": "bitch",
-    "nahui": "go fuck yourself",
-    "pidor": "faggot",
-    "pidoras": "faggot",
-    "cyka": "bitch",
-  };
-
-  return map[lower] || null;
-}
 async function aiTranslate(text, toLang) {
-  if (!OPENAI_API_KEY) return null;
-	const translitEn = translitRuToEn(text);
-if (translitEn && toLang === "en") {
-  return {
-    text: translitEn,
-    from: { language: { iso: "ru" } },
-    __aiTranslated: true,
-    __confidence: 1,
-  };
-}
-
-  // Skip obvious short English messages
-  if (isSimple(text)) {
-    return {
-      text,
-      from: { language: { iso: "en" } },
-      __aiTranslated: true,
-      __confidence: 1,
-    };
-  }
+  const client = getOpenAIClient();
+  if (!client) return null;
 
   const langLabel = langName(toLang) || toLang.toUpperCase();
-  const messages = [
-    { role: "system", content: AI_SYSTEM_PROMPT },
-   { role: "user", content: `Target language: ${langLabel}\nMessage: ${text}\nReturn JSON only.` },
-  ];
+  const completion = await client.chat.completions.create({
+    model: OPENAI_MODEL,
+    messages: [
+      { role: "system", content: AI_SYSTEM_PROMPT },
+      { role: "user", content: `Translate to ${langLabel}:\n${text}` },
+    ],
+    max_tokens: 256,
+    temperature: 0.2,
+  });
 
-  let raw;
-  const model = pickModel(text);
-
-  if (isOllamaKey(OPENAI_API_KEY)) {
-    const res = await fetch("http://127.0.0.1:11434/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        messages,
-        max_tokens: 120,
-        temperature: 0.1,
-        top_p: 0.9,
-      }),
-    });
-
-    if (!res.ok) throw new Error(`Ollama HTTP ${res.status}`);
-
-    const data = await res.json();
-    raw = data.choices?.[0]?.message?.content?.trim();
-  } else {
-    const client = getOpenAIClient();
-    if (!client) return null;
-
-    const completion = await client.chat.completions.create({
-      model,
-      messages,
-      max_tokens: 120,
-      temperature: 0.1,
-      top_p: 0.9,
-    });
-
-    raw = completion.choices?.[0]?.message?.content?.trim();
-  }
-
-  if (!raw) throw new Error("Empty response from AI");
-
-  const cleaned = raw.replace(/```json|```/g, "").trim();
-
-  let parsed;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    throw new Error(`Invalid JSON from AI: ${cleaned}`);
-  }
-
-  return {
-    text: parsed.text?.trim() || text,
-    from: {
-      language: {
-        iso: parsed.lang || "unknown",
-      },
-    },
-    __aiTranslated: true,
-    __confidence: 1,
-  };
+  const translated = completion.choices?.[0]?.message?.content?.trim();
+  if (!translated) throw new Error("Empty response from OpenAI");
+  return translated;
 }
 
 // ---------------------------------------------------------------------------
@@ -655,21 +544,15 @@ async function smartTranslate(text, toLang = "en") {
   // --- Try AI translation first if an OpenAI key is configured ---
   if (OPENAI_API_KEY) {
     try {
-      const aiRes = await aiTranslate(text, toLang);
-      if (aiRes) {
-	      const scriptHint = detectScriptHint(text);
-const translitHint = detectLatinSlavicHint(text);
-
-const res = {
-  ...aiRes,
-  from: {
-    language: {
-      iso: translitHint || aiRes.from?.language?.iso || scriptHint || "unknown"
-    }
-  },
-  __aiTranslated: true,
-  __confidence: aiRes.__confidence ?? 1,
-};
+      const aiText = await aiTranslate(text, toLang);
+      if (aiText) {
+        const scriptHint = detectScriptHint(text) || "unknown";
+        const res = {
+          text: aiText,
+          from: { language: { iso: scriptHint } },
+          __aiTranslated: true,
+          __confidence: 1,
+        };
         cacheSet(text, toLang, res);
         return res;
       }
@@ -682,6 +565,7 @@ const res = {
   // --- Google Translate fallback ---
   try {
     const scriptHint = detectScriptHint(text);
+
     const translateOpts = { to: toLang, tld: "com", autoCorrect: true };
 
     let res = await translateWithRetry(text, translateOpts);
@@ -724,16 +608,6 @@ function originalLangReadable(res) {
   return langName(iso);
 }
 
-
-function detectLatinSlavicHint(text) {
-  const lower = text.toLowerCase().trim();
-
-  if (/\b(privet|poka|spasibo|blyat|blayt|suka|nahui|pidor|pidoras|cyka)\b/.test(lower)) {
-    return "ru";
-  }
-
-  return null;
-}
 // ---------------------------------------------------------------------------
 // Game chat output via cfg file
 // ---------------------------------------------------------------------------
@@ -741,9 +615,8 @@ function detectLatinSlavicHint(text) {
 function sendToGameChat(text) {
   if (!GAME_CHAT_OUTPUT) return;
   try {
+    // Sanitize: strip characters that would break the say command
     const safe = text.replace(/[;\n\r"]/g, " ").trim();
-    if (!safe || safe === LAST_CFG_TEXT) return;
-    LAST_CFG_TEXT = safe;
     fs.writeFileSync(CFG_PATH, `say "${safe}"\n`, "utf8");
     console.log(sym.ok, chalk.green(`cfg written: ${safe}`));
   } catch (err) {
@@ -754,9 +627,8 @@ function sendToGameChat(text) {
 function sendToGameChatRu(text) {
   if (!GAME_RU_CHAT_OUTPUT) return;
   try {
+    // Sanitize: strip characters that would break the say command
     const safe = text.replace(/[;\n\r"]/g, " ").trim();
-    if (!safe || safe === LAST_CFG_RU_TEXT) return;
-    LAST_CFG_RU_TEXT = safe;
     fs.writeFileSync(CFG_RU_PATH, `say "${safe}"\n`, "utf8");
     console.log(sym.ok, chalk.green(`cfg_ru written: ${safe}`));
   } catch (err) {
@@ -777,24 +649,15 @@ async function autoTranslateToConsole({ team, sender, message }) {
   if (res.__failed) return;
 
   const fromIso = (res.__forcedFrom || res.from?.language?.iso || "unknown").toLowerCase();
-  const normalizedOriginal = message.trim().toLowerCase();
-  const normalizedTranslated = (res.text || "").trim().toLowerCase();
 
-  // Skip already-English or unchanged output
-  if (
-    fromIso === AUTO_TRANSLATE_TARGET.toLowerCase() ||
-    normalizedOriginal === normalizedTranslated
-  ) {
-    // For English source, optionally produce Russian cfg output only if it actually changed
+  if (fromIso === AUTO_TRANSLATE_TARGET.toLowerCase()) {
+    // Message is already in English; still translate to Russian if needed
     if (GAME_RU_CHAT_OUTPUT) {
       const resRu = await smartTranslate(message, "ru");
       if (!resRu.__excluded && !resRu.__failed) {
-        const translatedRu = (resRu.text || "").trim();
-        if (
-          translatedRu &&
-          translatedRu.toLowerCase() !== normalizedOriginal
-        ) {
-          sendToGameChatRu(`[${sender} - English] ${translatedRu}`);
+        const fromIsoRu = (resRu.__forcedFrom || resRu.from?.language?.iso || "unknown").toLowerCase();
+        if (fromIsoRu !== "ru") {
+          sendToGameChatRu(`[${sender} - ${originalLangReadable(resRu)}] ${resRu.text}`);
         }
       }
     }
@@ -822,47 +685,32 @@ async function autoTranslateToConsole({ team, sender, message }) {
   if (GAME_RU_CHAT_OUTPUT && fromIso !== "ru") {
     const resRu = await smartTranslate(message, "ru");
     if (!resRu.__excluded && !resRu.__failed) {
-      const translatedRu = (resRu.text || "").trim();
-      if (translatedRu && translatedRu.toLowerCase() !== normalizedOriginal) {
-        sendToGameChatRu(`[${sender} - ${readableLang}] ${translatedRu}`);
-      }
+      sendToGameChatRu(`[${sender} - ${readableLang}] ${resRu.text}`);
     }
   }
 }
+
 // ---------------------------------------------------------------------------
 // Log line parser
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+
 async function handleLine(line) {
   const match = line.match(/\[(CT|T|ALL)\]\s+([^:]+):\s(.+)/);
   if (!match) return;
 
   const [, team, player, messageRaw] = match;
   const message = (messageRaw || "").trim();
-
-  // Ignore translator-injected relay lines like:
-  // [0 [DEAD] - English] hello
-  // [0 - Russian] привет
-  if (/^\[.* - [^\]]+\]\s+/.test(message)) return;
-
-  // Ignore terminal/log echo lines
-  if (/^(💬|🌍|✅|⚠️|❌)\s/.test(message)) return;
-
-  // Ignore nested raw chat lines echoed as plain text
-  if (/^\[(ALL|CT|T)\]\s+.*:\s/.test(message)) return;
-
   const sender = (player || "").trim();
 
   console.log(
     sym.chat,
-    chalk.magentaBright(`[${team}] `) +
-    chalk.bold(sender) +
-    chalk.white(": ") +
-    chalk.white(message)
+    chalk.magentaBright(`[${team}] `) + chalk.bold(sender) + chalk.white(": ") + chalk.white(message)
   );
 
   await autoTranslateToConsole({ team, sender, message });
 }
+
+// ---------------------------------------------------------------------------
 // Help
 // ---------------------------------------------------------------------------
 
