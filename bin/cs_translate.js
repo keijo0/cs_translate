@@ -772,9 +772,14 @@ async function autoTranslateToConsole({ team, sender, message }) {
   if (!AUTO_TRANSLATE || !message) return;
 
   // --- Russian / Cyrillic input path ---
-  // Russian messages go to translated_ru.cfg as-is; skip translated.cfg entirely.
+  // Russian messages go to translated_ru.cfg as-is, and are also translated to
+  // English for translated.cfg so every message appears there.
   if (CYRILLIC_REGEX.test(message)) {
     sendToGameChatRu(`[${sender} - Russian] ${message}`);
+    const resEn = await smartTranslate(message, AUTO_TRANSLATE_TARGET);
+    if (!resEn.__excluded && !resEn.__failed) {
+      sendToGameChat(`[${sender} - Russian] ${resEn.text}`);
+    }
     return;
   }
 
@@ -786,14 +791,20 @@ async function autoTranslateToConsole({ team, sender, message }) {
 
   const fromIso = (res.__forcedFrom || res.from?.language?.iso || "unknown").toLowerCase();
   const isEnglish = fromIso === AUTO_TRANSLATE_TARGET.toLowerCase();
+  const normalizedMessage = message.trim().toLowerCase();
 
   if (isEnglish) {
-    // English input: already in the target language — skip translated.cfg (no translation needed).
-    // Only translate to Russian for translated_ru.cfg.
+    // English input: write as-is to translated.cfg (it is already in the target language).
+    sendToGameChat(`[${sender} - English] ${message}`);
+    // Translate to Russian for translated_ru.cfg, but skip when the translation
+    // comes back unchanged (e.g. "EZ KID" → "EZ KID").
     if (GAME_RU_CHAT_OUTPUT) {
       const resRu = await smartTranslate(message, "ru");
       if (!resRu.__excluded && !resRu.__failed) {
-        sendToGameChatRu(`[${sender} - English] ${resRu.text}`);
+        const translatedRu = (resRu.text || "").trim();
+        if (translatedRu && translatedRu.toLowerCase() !== normalizedMessage) {
+          sendToGameChatRu(`[${sender} - English] ${translatedRu}`);
+        }
       }
     }
     return;
@@ -822,7 +833,10 @@ async function autoTranslateToConsole({ team, sender, message }) {
   if (GAME_RU_CHAT_OUTPUT) {
     const resRu = await smartTranslate(message, "ru");
     if (!resRu.__excluded && !resRu.__failed) {
-      sendToGameChatRu(`[${sender} - ${readableLang}] ${resRu.text}`);
+      const translatedRu = (resRu.text || "").trim();
+      if (translatedRu && translatedRu.toLowerCase() !== normalizedMessage) {
+        sendToGameChatRu(`[${sender} - ${readableLang}] ${translatedRu}`);
+      }
     }
   }
 }
