@@ -682,26 +682,30 @@ async function autoTranslateToConsole({ team, sender, message }) {
 
   // Routing decision table:
   //
-  //  Detected source │ console log  │ cfg (EN)            │ cfg_ru (RU)
-  //  ────────────────┼──────────────┼─────────────────────┼──────────────────────────────────
-  //  excluded term   │ —            │ —                   │ —
-  //  translation err │ —            │ —                   │ —
-  //  EN (= target)   │ —            │ write original EN   │ write RU  (only if text changed)
-  //  RU / Cyrillic   │ print        │ write EN transl.    │ write raw RU (original message)
-  //  other foreign   │ print        │ write EN transl.    │ write RU  (only if text changed)
+  //  Detected source │ console log  │ cfg (EN)  │ cfg_ru (RU)
+  //  ────────────────┼──────────────┼───────────┼──────────────────────────────────
+  //  excluded term   │ —            │ —         │ —
+  //  translation err │ —            │ —         │ —
+  //  EN (= target)   │ —            │ —         │ write  (only if RU output on, and EN≠RU)
+  //  RU              │ —            │ —         │ —      (already Russian, drop entirely)
+  //  other foreign   │ print        │ write     │ write  (if RU output on, always)
 
   if (fromIso === AUTO_TRANSLATE_TARGET.toLowerCase()) {
-    // Message is already in English — write the original to cfg, translate to Russian if needed
-    sendToGameChat(`[${sender} - ${langName(AUTO_TRANSLATE_TARGET)}] ${message}`);
+    // Message is already in English — skip cfg, but translate to Russian if needed
     if (GAME_RU_CHAT_OUTPUT) {
       const resRu = await smartTranslate(message, "ru");
       if (!resRu.__excluded && !resRu.__failed) {
-        const translatedRu = (resRu.text || "").trim();
-        if (translatedRu && translatedRu.toLowerCase() !== message.trim().toLowerCase()) {
-          sendToGameChatRu(`[${sender} - ${langName(AUTO_TRANSLATE_TARGET)}] ${translatedRu}`);
+        const fromIsoRu = (resRu.__forcedFrom || resRu.from?.language?.iso || "unknown").toLowerCase();
+        if (fromIsoRu !== "ru") {
+          sendToGameChatRu(`[${sender} - ${originalLangReadable(resRu)}] ${resRu.text}`);
         }
       }
     }
+    return;
+  }
+
+  if (fromIso === "ru") {
+    // Message is already Russian — drop entirely (nothing written)
     return;
   }
 
@@ -722,19 +726,11 @@ async function autoTranslateToConsole({ team, sender, message }) {
 
   sendToGameChat(`[${sender} - ${readableLang}] ${res.text}`);
 
+  // Also translate to Russian if enabled (always, for other-language messages)
   if (GAME_RU_CHAT_OUTPUT) {
-    if (fromIso === "ru") {
-      // Source is already Russian — write the original message raw to cfg_ru
-      sendToGameChatRu(`[${sender} - ${readableLang}] ${message}`);
-    } else {
-      // Other foreign language — translate to Russian, but only write if text actually changed
-      const resRu = await smartTranslate(message, "ru");
-      if (!resRu.__excluded && !resRu.__failed) {
-        const translatedRu = (resRu.text || "").trim();
-        if (translatedRu && translatedRu.toLowerCase() !== message.trim().toLowerCase()) {
-          sendToGameChatRu(`[${sender} - ${readableLang}] ${translatedRu}`);
-        }
-      }
+    const resRu = await smartTranslate(message, "ru");
+    if (!resRu.__excluded && !resRu.__failed) {
+      sendToGameChatRu(`[${sender} - ${readableLang}] ${resRu.text}`);
     }
   }
 }
