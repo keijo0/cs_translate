@@ -345,15 +345,47 @@ const HEBREW_REGEX    = /[\u0590-\u05FF]/;
 const GREEK_REGEX     = /[\u0370-\u03FF]/;
 const GEORGIAN_REGEX  = /[\u10A0-\u10FF]/;
 
-function detectScriptHint(text) {
+function detectLanguageHint(text) {
+  const t = text.toLowerCase();
+
+  // Script-based detection (high confidence)
   if (CYRILLIC_REGEX.test(text)) return "ru";
-  if (ARABIC_REGEX.test(text))   return "ar";
-  if (HEBREW_REGEX.test(text))   return "he";
-  if (THAI_REGEX.test(text))     return "th";
+  if (ARABIC_REGEX.test(text)) return "ar";
+  if (HEBREW_REGEX.test(text)) return "he";
+  if (THAI_REGEX.test(text)) return "th";
   if (DEVANAGARI_REGEX.test(text)) return "hi";
-  if (GREEK_REGEX.test(text))    return "el";
+  if (GREEK_REGEX.test(text)) return "el";
   if (GEORGIAN_REGEX.test(text)) return "ka";
-  if (CJK_REGEX.test(text))      return "zh";
+
+  // Japanese (hiragana + katakana)
+  if (/[\u3040-\u30ff]/.test(text)) return "ja";
+
+  // Korean (hangul)
+  if (/[\uac00-\ud7af]/.test(text)) return "ko";
+
+  // Chinese (CJK without JP/KR)
+  if (CJK_REGEX.test(text)) return "zh";
+
+  // Persian (Arabic script but common Persian words)
+  if (ARABIC_REGEX.test(text) && /(سلام|خوبی|چطوری)/.test(t)) return "fa";
+
+  if (/\b(privet|poka|spasibo|kak dela|da|net|blya|suka|nahui|idi nahui|dolboeb)\b/i.test(t)) {
+  return "ru";
+  }
+
+  // ---- Latin heuristics (medium confidence) ----
+
+  if (/[äöå]/.test(t)) return "fi";         // Finnish / Swedish
+  if (/[ąćęłńśźż]/.test(t)) return "pl";   // Polish
+  if (/[ěščřžýáíé]/.test(t)) return "cs";  // Czech
+  if (/[ß]/.test(t)) return "de";          // German
+  if (/[çàèùâêîôû]/.test(t)) return "fr";  // French
+  if (/[ñáéíóú]/.test(t)) return "es";     // Spanish
+  if (/[ãõ]/.test(t)) return "pt";         // Portuguese
+  if (/[àèéìòù]/.test(t)) return "it";     // Italian
+  if (/\b(ik|jij|niet|wel)\b/.test(t)) return "nl"; // Dutch
+  if (/\b(och|inte|hej)\b/.test(t)) return "sv";    // Swedish
+
   return null;
 }
 
@@ -447,7 +479,7 @@ function computeConfidence(text, detectedLang, targetLang) {
   let score = 0.5;
   if (text.length >= 20) score += 0.2;
   if (text.length >= 50) score += 0.15;
-  const scriptHint = detectScriptHint(text);
+  const scriptHint = detectLanguageHint(text);
   if (scriptHint && scriptHint === detectedLang) score += 0.15;
   return Math.min(score, 1.0);
 }
@@ -480,17 +512,27 @@ async function translateWithRetry(text, opts) {
 // ---------------------------------------------------------------------------
 
 // CS2-context system prompt — teaches the model to handle gaming slang properly
-const AI_SYSTEM_PROMPT = `You are a real-time chat translator for Counter-Strike 2 (CS2).
+const AI_SYSTEM_PROMPT = `You are a strict real-time translator for Counter-Strike 2 chat.
 
-Translate the message to the requested language.
+Translate the user's message into the requested target language.
 
 Rules:
-- Preserve tone, intensity, and offensiveness (do NOT sanitize insults or profanity).
-- Translate slang and swear words accurately (e.g. "mitä vittua" → "what the fuck", not "what's up").
-- Preserve all CS2 terms exactly (bhop, awp, rush, smoke, etc.).
-- Preserve player names and tags exactly.
-- Return ONLY the translated text.
-- If already in target language, return unchanged.`;
+- Output ONLY the translation text.
+- No explanations.
+- No notes.
+- No warnings.
+- No commentary.
+- No quotation marks.
+- No parentheses unless they are already in the original message.
+- Do not describe whether a word is offensive or inappropriate.
+- Preserve insults, profanity, and toxicity exactly in meaning and intensity.
+- Do not replace a slur with a different slur.
+- Do not sanitize.
+- Do not moralize.
+- Preserve player names, tags, and CS2 terms exactly.
+- If the message is already in the target language, return it unchanged.
+- If the input is only ASCII art, symbols, or decorative Unicode spam, return it unchanged.
+- Never add any extra words before or after the translation.`;
 
 let _openaiClient = null;
 function isOllamaKey(key) {
@@ -514,7 +556,7 @@ async function aiTranslate(text, toLang) {
   const langLabel = langName(toLang) || toLang.toUpperCase();
   const messages = [
     { role: "system", content: AI_SYSTEM_PROMPT },
-    { role: "user", content: `Translate to ${langLabel}:\n${text}` },
+    { role: "user", content: `Target language: ${langLabel}\nMessage:\n${text}` },
   ];
 
   // Use raw fetch for Ollama to avoid OpenAI SDK key validation
@@ -528,7 +570,7 @@ async function aiTranslate(text, toLang) {
     const data = await res.json();
     const translated = data.choices?.[0]?.message?.content?.trim();
     if (!translated) throw new Error("Empty response from Ollama");
-    return translated;
+    return cleanAITranslationOutput(translated);
   }
 
   // Standard OpenAI path
@@ -543,9 +585,27 @@ async function aiTranslate(text, toLang) {
 
   const translated = completion.choices?.[0]?.message?.content?.trim();
   if (!translated) throw new Error("Empty response from OpenAI");
-  return translated;
+  return cleanAITranslationOutput(translated);
 }
 
+function cleanAITranslationOutput(text) {
+  if (!text) return text;
+
+  let out = text.trim();
+
+  // Remove common assistant-style prefacing
+  out = out.replace(/^(translation\s*:|translated text\s*:|answer\s*:)\s*/i, "");
+
+  // Reject explanation-y outputs and fall back later
+  if (
+    /\b(already in|offensive|inappropriate|translation|means|can be used|explanation|note:)\b/i.test(out) ||
+    /[\r\n]{2,}/.test(out)
+  ) {
+    throw new Error("AI returned commentary instead of pure translation");
+  }
+
+  return out;
+}
 // ---------------------------------------------------------------------------
 // Translation
 // ---------------------------------------------------------------------------
@@ -569,37 +629,41 @@ async function smartTranslate(text, toLang = "en") {
     return { ...cached, __fromCache: true };
   }
 
-  // --- Try AI translation first if an OpenAI key is configured ---
-  if (OPENAI_API_KEY) {
-    try {
-      const aiText = await aiTranslate(text, toLang);
-      if (aiText) {
-        const scriptHint = detectScriptHint(text) || "unknown";
-        const res = {
-          text: aiText,
-          from: { language: { iso: scriptHint } },
-          __aiTranslated: true,
-          __confidence: 1,
-        };
-        cacheSet(text, toLang, res);
-        return res;
-      }
-    } catch (err) {
-      // AI failed — log a warning and fall through to Google Translate
-      console.log(sym.warn, chalk.yellow(`AI translation failed (${err.message}), falling back to Google Translate.`));
+  const wordCount = text.trim().split(/\s+/).length;
+
+  if (OPENAI_API_KEY && wordCount > 4) {
+  try {
+    const aiText = await aiTranslate(text, toLang);
+
+    if (aiText) {
+      const scriptHint = detectLanguageHint(text);
+      const fallbackLang = scriptHint || (/[a-z]/i.test(text) ? "en" : "unknown");
+
+      const res = {
+        text: aiText,
+        from: { language: { iso: fallbackLang } },
+        __aiTranslated: true,
+        __confidence: 1,
+      };
+
+      cacheSet(text, toLang, res);
+      return res;
     }
+  } catch (err) {
+    console.log(sym.warn, chalk.yellow(`AI translation failed (${err.message}), falling back to Google Translate.`));
   }
+}
 
   // --- Google Translate fallback ---
   try {
-    const scriptHint = detectScriptHint(text);
+    const scriptHint = detectLanguageHint(text);
 
     const translateOpts = { to: toLang, tld: "com", autoCorrect: true };
 
     let res = await translateWithRetry(text, translateOpts);
     const guess = (res.from?.language?.iso || "").toLowerCase();
 
-    if (scriptHint === "ru") {
+	if (scriptHint === "ru" && text.length >= 5) {
       // Cyrillic text: trust auto-detect when it returns any known Cyrillic language
       // (Russian, Ukrainian, Bulgarian, Serbian, Belarusian, etc.).
       // Only retry with Russian if auto-detect completely missed the Cyrillic script
@@ -728,6 +792,20 @@ async function handleLine(line) {
 
   const [, team, player, messageRaw] = match;
   const message = (messageRaw || "").trim();
+  const normalizedMessage = message
+  .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F]/g, "") // strip invisible unicode
+  .trim();
+
+// Ignore translator-injected relay lines like:
+// [0 - English] hello
+// [0 - Russian] privet
+if (/^\[[^\]]+\s-\s[^\]]+\]/.test(normalizedMessage)) return;
+
+// Ignore terminal/log echo lines
+if (/^(💬|🌍|✅|⚠️|❌)\s/.test(normalizedMessage)) return;
+
+// Ignore nested raw chat lines echoed as plain text
+if (/^\[(ALL|CT|T)\]\s+.*:\s/.test(normalizedMessage)) return;
   const sender = (player || "").trim();
 
   console.log(
@@ -840,23 +918,32 @@ async function start() {
     console.log(chalk.yellow(`  ⚡ Make sure CS2 has:  bind "F9" "exec translated_ru"  in autoexec.cfg`));
   }
   console.log("");
+let lastSize = fs.statSync(LOG_PATH).size;
 
-  fs.watchFile(LOG_PATH, { interval: 500 }, (curr, prev) => {
-    if (curr.size <= prev.size) return;
+fs.watchFile(LOG_PATH, { interval: 500 }, (curr) => {
+  if (curr.size < lastSize) {
+    lastSize = curr.size; // log reset
+    return;
+  }
 
-    const stream = fs.createReadStream(LOG_PATH, {
-      start: prev.size,
-      end: curr.size,
-      encoding: "utf8",
-    });
+  if (curr.size === lastSize) return;
 
-    const rl = readline.createInterface({ input: stream });
-    rl.on("line", (line) => {
-      Promise.resolve(handleLine(line)).catch((err) => {
-        console.error(chalk.red("Line handling error:"), err);
-      });
+  const stream = fs.createReadStream(LOG_PATH, {
+    start: lastSize,
+    end: curr.size - 1, // IMPORTANT
+    encoding: "utf8",
+  });
+
+  lastSize = curr.size;
+
+  const rl = readline.createInterface({ input: stream });
+  rl.on("line", (line) => {
+    Promise.resolve(handleLine(line)).catch((err) => {
+      console.error(chalk.red("Line handling error:"), err);
     });
   });
+});
+
 }
 
 // ---------------------------------------------------------------------------
