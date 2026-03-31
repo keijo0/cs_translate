@@ -128,8 +128,6 @@ let GAME_RU_CHAT_OUTPUT = false;
 let EXCLUDED_TERMS = [];
 let OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 let OPENAI_MODEL = "gpt-4o-mini";
-let LAST_CFG_TEXT = "";
-let LAST_CFG_RU_TEXT = "";
 
 // ---------------------------------------------------------------------------
 // Config load/save
@@ -647,9 +645,8 @@ function originalLangReadable(res) {
 function sendToGameChat(text) {
   if (!GAME_CHAT_OUTPUT) return;
   try {
+    // Sanitize: strip characters that would break the say command
     const safe = text.replace(/[;\n\r"]/g, " ").trim();
-    if (!safe || safe === LAST_CFG_TEXT) return;
-    LAST_CFG_TEXT = safe;
     fs.writeFileSync(CFG_PATH, `say "${safe}"\n`, "utf8");
     console.log(sym.ok, chalk.green(`cfg written: ${safe}`));
   } catch (err) {
@@ -660,9 +657,8 @@ function sendToGameChat(text) {
 function sendToGameChatRu(text) {
   if (!GAME_RU_CHAT_OUTPUT) return;
   try {
+    // Sanitize: strip characters that would break the say command
     const safe = text.replace(/[;\n\r"]/g, " ").trim();
-    if (!safe || safe === LAST_CFG_RU_TEXT) return;
-    LAST_CFG_RU_TEXT = safe;
     fs.writeFileSync(CFG_RU_PATH, `say "${safe}"\n`, "utf8");
     console.log(sym.ok, chalk.green(`cfg_ru written: ${safe}`));
   } catch (err) {
@@ -677,48 +673,27 @@ function sendToGameChatRu(text) {
 async function autoTranslateToConsole({ team, sender, message }) {
   if (!AUTO_TRANSLATE || !message) return;
 
-  // --- Russian / Cyrillic input path ---
-  // Russian messages go to translated_ru.cfg as-is, and are also translated to
-  // English for translated.cfg so every message appears there.
-  if (CYRILLIC_REGEX.test(message)) {
-    sendToGameChatRu(`[${sender} - Russian] ${message}`);
-    const resEn = await smartTranslate(message, AUTO_TRANSLATE_TARGET);
-    if (!resEn.__excluded && !resEn.__failed) {
-      sendToGameChat(`[${sender} - Russian] ${resEn.text}`);
-    }
-    return;
-  }
-
-  // --- Non-Russian input: translate to English first ---
   const res = await smartTranslate(message, AUTO_TRANSLATE_TARGET);
 
   if (res.__excluded) return;
   if (res.__failed) return;
 
   const fromIso = (res.__forcedFrom || res.from?.language?.iso || "unknown").toLowerCase();
-  const isEnglish = fromIso === AUTO_TRANSLATE_TARGET.toLowerCase();
-  const normalizedMessage = message.trim().toLowerCase();
 
-  if (isEnglish) {
-    // English input: write as-is to translated.cfg (it is already in the target language).
-    sendToGameChat(`[${sender} - English] ${message}`);
-    // Translate to Russian for translated_ru.cfg, but skip when the translation
-    // comes back unchanged (e.g. "EZ KID" → "EZ KID").
+  if (fromIso === AUTO_TRANSLATE_TARGET.toLowerCase()) {
+    // Message is already in English; still translate to Russian if needed
     if (GAME_RU_CHAT_OUTPUT) {
       const resRu = await smartTranslate(message, "ru");
       if (!resRu.__excluded && !resRu.__failed) {
-        const translatedRu = (resRu.text || "").trim();
-        if (translatedRu && translatedRu.toLowerCase() !== normalizedMessage) {
-          sendToGameChatRu(`[${sender} - English] ${translatedRu}`);
+        const fromIsoRu = (resRu.__forcedFrom || resRu.from?.language?.iso || "unknown").toLowerCase();
+        if (fromIsoRu !== "ru") {
+          sendToGameChatRu(`[${sender} - ${originalLangReadable(resRu)}] ${resRu.text}`);
         }
       }
     }
     return;
   }
 
-  // --- Other language (e.g. Turkish, Finnish, …) ---
-  // Translate to English → translated.cfg
-  // Translate to Russian → translated_ru.cfg
   const readableLang = originalLangReadable(res);
   const cacheTag = res.__fromCache ? chalk.gray(" [cached]") : "";
   const aiTag = res.__aiTranslated ? chalk.magenta(" [AI]") : "";
@@ -736,50 +711,36 @@ async function autoTranslateToConsole({ team, sender, message }) {
 
   sendToGameChat(`[${sender} - ${readableLang}] ${res.text}`);
 
-  if (GAME_RU_CHAT_OUTPUT) {
+  // Also translate to Russian if enabled, unless the source is already Russian
+  if (GAME_RU_CHAT_OUTPUT && fromIso !== "ru") {
     const resRu = await smartTranslate(message, "ru");
     if (!resRu.__excluded && !resRu.__failed) {
-      const translatedRu = (resRu.text || "").trim();
-      if (translatedRu && translatedRu.toLowerCase() !== normalizedMessage) {
-        sendToGameChatRu(`[${sender} - ${readableLang}] ${translatedRu}`);
-      }
+      sendToGameChatRu(`[${sender} - ${readableLang}] ${resRu.text}`);
     }
   }
 }
+
 // ---------------------------------------------------------------------------
 // Log line parser
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+
 async function handleLine(line) {
   const match = line.match(/\[(CT|T|ALL)\]\s+([^:]+):\s(.+)/);
   if (!match) return;
 
   const [, team, player, messageRaw] = match;
   const message = (messageRaw || "").trim();
-
-  // Ignore translator-injected relay lines like:
-  // [0 [DEAD] - English] hello
-  // [0 - Russian] привет
-  if (/^\[.* - [^\]]+\]\s+/.test(message)) return;
-
-  // Ignore terminal/log echo lines
-  if (/^(💬|🌍|✅|⚠️|❌)\s/.test(message)) return;
-
-  // Ignore nested raw chat lines echoed as plain text
-  if (/^\[(ALL|CT|T)\]\s+.*:\s/.test(message)) return;
-
   const sender = (player || "").trim();
 
   console.log(
     sym.chat,
-    chalk.magentaBright(`[${team}] `) +
-    chalk.bold(sender) +
-    chalk.white(": ") +
-    chalk.white(message)
+    chalk.magentaBright(`[${team}] `) + chalk.bold(sender) + chalk.white(": ") + chalk.white(message)
   );
 
   await autoTranslateToConsole({ team, sender, message });
 }
+
+// ---------------------------------------------------------------------------
 // Help
 // ---------------------------------------------------------------------------
 
