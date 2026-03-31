@@ -493,13 +493,15 @@ Rules:
 - If already in target language, return unchanged.`;
 
 let _openaiClient = null;
+
 function isOllamaKey(key) {
   return key === "ollama" || key?.startsWith("ollama:");
 }
+
 function getOpenAIClient() {
   if (!OPENAI_API_KEY) return null;
   if (!_openaiClient) {
-    const isOllama = OPENAI_API_KEY === "ollama" || OPENAI_API_KEY.startsWith("ollama:");
+    const isOllama = isOllamaKey(OPENAI_API_KEY);
     _openaiClient = new OpenAI({
       apiKey: isOllama ? "sk-ollama" : OPENAI_API_KEY,
       baseURL: isOllama ? "http://127.0.0.1:11434/v1" : undefined,
@@ -593,7 +595,6 @@ async function smartTranslate(text, toLang = "en") {
   // --- Google Translate fallback ---
   try {
     const scriptHint = detectScriptHint(text);
-
     const translateOpts = { to: toLang, tld: "com", autoCorrect: true };
 
     let res = await translateWithRetry(text, translateOpts);
@@ -635,6 +636,7 @@ function originalLangReadable(res) {
   const iso = (res.__forcedFrom || res.from?.language?.iso || "unknown").toLowerCase();
   return langName(iso);
 }
+
 
 // ---------------------------------------------------------------------------
 // Game chat output via cfg file
@@ -678,8 +680,18 @@ async function autoTranslateToConsole({ team, sender, message }) {
 
   const fromIso = (res.__forcedFrom || res.from?.language?.iso || "unknown").toLowerCase();
 
+  // Routing decision table:
+  //
+  //  Detected source │ console log  │ cfg (EN)  │ cfg_ru (RU)
+  //  ────────────────┼──────────────┼───────────┼──────────────────────────────────
+  //  excluded term   │ —            │ —         │ —
+  //  translation err │ —            │ —         │ —
+  //  EN (= target)   │ —            │ —         │ write  (only if RU output on, and EN≠RU)
+  //  RU              │ —            │ —         │ —      (already Russian, drop entirely)
+  //  other foreign   │ print        │ write     │ write  (if RU output on, always)
+
   if (fromIso === AUTO_TRANSLATE_TARGET.toLowerCase()) {
-    // Message is already in English; still translate to Russian if needed
+    // Message is already in English — skip cfg, but translate to Russian if needed
     if (GAME_RU_CHAT_OUTPUT) {
       const resRu = await smartTranslate(message, "ru");
       if (!resRu.__excluded && !resRu.__failed) {
@@ -689,6 +701,11 @@ async function autoTranslateToConsole({ team, sender, message }) {
         }
       }
     }
+    return;
+  }
+
+  if (fromIso === "ru") {
+    // Message is already Russian — drop entirely (nothing written)
     return;
   }
 
@@ -709,8 +726,8 @@ async function autoTranslateToConsole({ team, sender, message }) {
 
   sendToGameChat(`[${sender} - ${readableLang}] ${res.text}`);
 
-  // Also translate to Russian if enabled, unless the source is already Russian
-  if (GAME_RU_CHAT_OUTPUT && fromIso !== "ru") {
+  // Also translate to Russian if enabled (always, for other-language messages)
+  if (GAME_RU_CHAT_OUTPUT) {
     const resRu = await smartTranslate(message, "ru");
     if (!resRu.__excluded && !resRu.__failed) {
       sendToGameChatRu(`[${sender} - ${readableLang}] ${resRu.text}`);
@@ -728,6 +745,18 @@ async function handleLine(line) {
 
   const [, team, player, messageRaw] = match;
   const message = (messageRaw || "").trim();
+
+  // Ignore translator-injected relay lines like:
+  // [0 [DEAD] - English] hello
+  // [0 - Russian] привет
+  if (/^\[.* - [^\]]+\]\s+/.test(message)) return;
+
+  // Ignore terminal/log echo lines
+  if (/^(💬|🌍|✅|⚠️|❌)\s/.test(message)) return;
+
+  // Ignore nested raw chat lines echoed as plain text
+  if (/^\[(ALL|CT|T)\]\s+.*:\s/.test(message)) return;
+
   const sender = (player || "").trim();
 
   console.log(
