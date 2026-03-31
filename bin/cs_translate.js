@@ -730,6 +730,18 @@ async function handleLine(line) {
 
   const [, team, player, messageRaw] = match;
   const message = (messageRaw || "").trim();
+
+  // Ignore translator-injected relay lines like:
+  // [0 [DEAD] - English] hello
+  // [0 - Russian] привет
+  if (/^\[.* - [^\]]+\]\s+/.test(message)) return;
+
+  // Ignore terminal/log echo lines
+  if (/^(💬|🌍|✅|⚠️|❌)\s/.test(message)) return;
+
+  // Ignore nested raw chat lines echoed as plain text
+  if (/^\[(ALL|CT|T)\]\s+.*:\s/.test(message)) return;
+
   const sender = (player || "").trim();
 
   console.log(
