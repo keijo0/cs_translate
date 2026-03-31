@@ -680,6 +680,16 @@ async function autoTranslateToConsole({ team, sender, message }) {
 
   const fromIso = (res.__forcedFrom || res.from?.language?.iso || "unknown").toLowerCase();
 
+  // Routing decision table:
+  //
+  //  Detected source │ console log  │ cfg (EN)  │ cfg_ru (RU)
+  //  ────────────────┼──────────────┼───────────┼──────────────────────────────────
+  //  excluded term   │ —            │ —         │ —
+  //  translation err │ —            │ —         │ —
+  //  EN (= target)   │ —            │ —         │ write  (only if RU output on, and EN≠RU)
+  //  RU              │ print        │ write     │ —      (already Russian, skip RU cfg)
+  //  other foreign   │ print        │ write     │ write  (if RU output on)
+
   if (fromIso === AUTO_TRANSLATE_TARGET.toLowerCase()) {
     // Message is already in English; still translate to Russian if needed
     if (GAME_RU_CHAT_OUTPUT) {
