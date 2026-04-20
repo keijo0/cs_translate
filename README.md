@@ -21,9 +21,9 @@ By default it is **read-only** — but it also has an **optional game chat outpu
     - Return only the translated text — no explanations or commentary
   - AI translations are tagged **`[AI]`** in the terminal output.
   - If the AI call fails for any reason, the tool **automatically falls back to Google Translate** — zero downtime.
-  - Enable with one command:
+  - Enable by setting your API key:
     ```bash
-    cs_translate --set-openai-key sk-...your-key...
+    cs_translate --set-openai-key <your-key>
     ```
   - You can also set the key via the `OPENAI_API_KEY` environment variable.
   - Change the model (default: `gpt-4o-mini`):
@@ -34,6 +34,12 @@ By default it is **read-only** — but it also has an **optional game chat outpu
     ```bash
     cs_translate --clear-openai-key
     ```
+
+- 🦙 **Local AI translation (Ollama) — privacy-first, no API costs**
+  - Run translations entirely on your own machine using [Ollama](https://ollama.com/) — no internet required, no API keys, no usage fees.
+  - Supported models include `llama3`, `mistral`, `neural-chat`, `gemma`, `phi3`, and any other model available through Ollama.
+  - The setup script (`cs_translate_setup.sh`) installs Ollama, pulls your chosen model, and patches `cs_translate.js` automatically.
+  - See the [Ollama Local AI Models](#ollama-local-ai-models) section below for full setup details.
 
 - 🧠 **Automatic chat translation**
   - Watches `console.log` for chat lines like:
@@ -106,6 +112,80 @@ By default it is **read-only** — but it also has an **optional game chat outpu
 
 ---
 
+## Ollama Local AI Models
+
+[Ollama](https://ollama.com/) lets you run large language models entirely on your own machine. Using Ollama with `cs_translate` means:
+
+- **No API keys or accounts required**
+- **No usage costs**
+- **Full privacy** — chat messages never leave your computer
+
+### Supported models
+
+Any model available in the Ollama library works. Popular choices:
+
+| Model | Command | Notes |
+|---|---|---|
+| Llama 3 | `ollama pull llama3` | Good balance of speed and quality |
+| Mistral | `ollama pull mistral` | Fast, strong multilingual support |
+| Neural Chat | `ollama pull neural-chat` | Optimised for conversation |
+| Gemma | `ollama pull gemma` | Compact, runs well on modest hardware |
+| Phi-3 Mini | `ollama pull phi3:mini` | Very fast, low VRAM |
+
+### Installing Ollama on Linux
+
+```bash
+# Official installer (works on most distros)
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Arch Linux / AUR
+yay -S ollama
+# or
+paru -S ollama
+```
+
+### Starting the Ollama service
+
+```bash
+# Start manually
+ollama serve &
+
+# Or via systemd (if installed as a system service)
+sudo systemctl start ollama
+sudo systemctl enable ollama   # start at boot
+```
+
+### Pulling a model
+
+```bash
+ollama pull llama3
+# or
+ollama pull mistral
+```
+
+### Automatic setup with the setup script
+
+The included `cs_translate_setup.sh` script handles everything automatically:
+
+```bash
+bash cs_translate_setup.sh
+
+# Use a different model
+CS_TRANSLATE_MODEL=mistral bash cs_translate_setup.sh
+```
+
+The script will:
+1. Install Ollama if it is not already present
+2. Start the Ollama background service
+3. Pull your chosen model
+4. Patch `cs_translate.js` to add Ollama support
+5. Configure `cs_translate` to use the local model
+6. Launch `cs_translate`
+
+See the [Setup Script](#setup-script-cs_translate_setupsh) section for more details.
+
+---
+
 ## Requirements
 
 - **OS**
@@ -114,11 +194,13 @@ By default it is **read-only** — but it also has an **optional game chat outpu
 
 - **Runtime**
   - Node.js 18+ (or newer)
-  - Internet access (for Google Translate)
+  - npm 8+
+  - Internet access (for Google Translate or model downloads)
 
 - **Node dependencies (handled via `npm install`)**
   - `google-translate-api-x` (translation)
   - `chalk` (colored terminal output)
+  - `openai` (optional — for OpenAI GPT translation)
 
 ---
 
@@ -263,6 +345,40 @@ You rarely need to edit `config.json` by hand. The CLI provides helpers:
 
 ## Installation
 
+### Prerequisites (Linux)
+
+Before installing `cs_translate`, make sure you have Node.js and npm available:
+
+```bash
+# Check existing versions
+node --version   # needs 18+
+npm --version    # needs 8+
+```
+
+**Install Node.js on Arch Linux:**
+
+```bash
+sudo pacman -S nodejs npm
+```
+
+**Install Node.js on Debian/Ubuntu:**
+
+```bash
+sudo apt update
+sudo apt install nodejs npm
+```
+
+**Install Node.js via nvm (any distro — recommended for the latest version):**
+
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+# Reload your shell, then:
+nvm install --lts
+nvm use --lts
+```
+
+---
+
 ### Arch Linux / AUR
 
 If you are on Arch or an Arch-based distro (EndeavourOS, Artix, etc.), you can install `cs_translate` from the AUR:
@@ -285,14 +401,68 @@ cs_translate --init-config
 cs_translate
 ```
 
+---
+
+### Installing from source (Linux)
+
+1. **Clone the repository:**
+
+   ```bash
+   git clone https://github.com/keijo0/cs_translate.git
+   cd cs_translate
+   ```
+
+2. **Install Node dependencies:**
+
+   ```bash
+   npm install
+   ```
+
+3. **Make the CLI script executable:**
+
+   ```bash
+   chmod +x bin/cs_translate.js
+   ```
+
+4. **Link it globally** so the `cs_translate` command is available system-wide:
+
+   ```bash
+   npm link
+   ```
+
+   > **Note:** `npm link` creates a symlink in your global `node_modules` bin directory. You may need `sudo npm link` depending on your npm setup, or configure npm to use a user-writable prefix (recommended with nvm).
+
+5. **Verify the installation:**
+
+   ```bash
+   cs_translate --help
+   ```
+
+6. **Initialize config and set your console.log path:**
+
+   ```bash
+   cs_translate --init-config
+   cs_translate --set-log-path ~/.local/share/Steam/steamapps/common/Counter-Strike\ Global\ Offensive/game/csgo/console.log
+   ```
+
+7. **Test it:**
+
+   ```bash
+   cs_translate
+   ```
+
+   You should see the startup banner. Leave this terminal open while playing CS2.
+
+---
+
 ### Manual installation (generic Node.js)
 
-If you want to run it directly from source:
+If you want to run it directly from source without installing globally:
 
 1. Clone the repo:
 
    ```bash
-   git clone https://github.com/MeckeDev/cs_translate.git
+   git clone https://github.com/keijo0/cs_translate.git
    cd cs_translate
    ```
 
@@ -322,6 +492,39 @@ Or globally link it as `cs_translate`:
 npm link
 cs_translate --help
 ```
+
+---
+
+## Setup Script (`cs_translate_setup.sh`)
+
+The included `cs_translate_setup.sh` script automates the full Ollama + cs_translate setup on Linux:
+
+```bash
+# Download (if needed) and run
+bash cs_translate_setup.sh
+
+# Use a specific model (default: llama3)
+CS_TRANSLATE_MODEL=mistral bash cs_translate_setup.sh
+```
+
+### What the script does
+
+1. ✅ Checks that Node.js is installed
+2. ✅ Installs Ollama if not already present
+3. ✅ Starts the Ollama background service
+4. ✅ Pulls your chosen model (default: `llama3`)
+5. ✅ Locates your `cs_translate.js` installation automatically
+6. ✅ Creates a backup of the original file (`cs_translate.js.bak`)
+7. ✅ Patches `cs_translate.js` to add an Ollama translation function using raw HTTP fetch
+8. ✅ Configures `cs_translate` to use the local Ollama model
+9. ✅ Launches `cs_translate` in kitty (if available) or the current terminal
+
+### Script features
+
+- 🎨 **Colored output** — clear info, success, warning, and error messages
+- 🔒 **No API tokens** — Ollama runs entirely locally, nothing is stored or transmitted
+- 💾 **Safe** — backs up `cs_translate.js` before making any changes
+- 🔄 **Idempotent** — safe to run multiple times; skips steps already completed
 
 ---
 
@@ -459,7 +662,7 @@ In those cases, the tool will fall back to printing the original text.
 To hack on `cs_translate`:
 
 ```bash
-git clone https://github.com/MeckeDev/cs_translate.git
+   git clone https://github.com/keijo0/cs_translate.git
 cd cs_translate
 npm install
 
